@@ -1,0 +1,29 @@
+# Environment & Secrets
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+*.sqlite3
+*.db
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Reference
+_reference_old_repo/
+
+# Logs & Temp
+*.log
+.coverage
+htmlcov/
+.pytest_cache/

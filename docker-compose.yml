@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: redcode_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=production
+      # In production, specify connection to your existing PostgreSQL container:
+      # e.g.: postgresql+asyncpg://postgres:yourpassword@postgres_container:5432/redcode
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres_host:5432/redcode}
+      - SECRET_KEY=${SECRET_KEY}
+      - AUDIO_UPLOAD_DIR=/app/static/audio
+    volumes:
+      - redcode_audio:/app/static/audio
+    networks:
+      - redcode_net
+      # If your existing PostgreSQL container is on an external network, uncomment below:
+      # - existing_postgres_network
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    container_name: redcode_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      # Mount built frontend assets
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      # Mount persisted audio assets for direct streaming
+      - redcode_audio:/var/www/assets/audio:ro
+    depends_on:
+      - backend
+    networks:
+      - redcode_net
+
+volumes:
+  redcode_audio:
+    name: redcode_audio_data
+
+networks:
+  redcode_net:
+    driver: bridge
+  # To connect with existing PostgreSQL container on hospital server:
+  # existing_postgres_network:
+  #   external: true
+  #   name: your_existing_postgres_network_name
