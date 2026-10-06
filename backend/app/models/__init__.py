@@ -123,6 +123,7 @@ class AlarmType(Base):
     display_color: Mapped[str] = mapped_column(String(20), default="#dc2626", nullable=False) # e.g. hex #dc2626
     receiver_group_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("receiver_groups.id"), nullable=True)
     audio_sequence: Mapped[Optional[Any]] = mapped_column(JSON, default=list) # List of audio file codes/urls
+    allowed_department_ids: Mapped[Optional[Any]] = mapped_column(JSON, default=list) # List of department IDs permitted to trigger this alarm (empty = all)
     repeat_count: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     repeat_interval_ms: Mapped[int] = mapped_column(Integer, default=1500, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -146,6 +147,7 @@ class Alarm(Base):
     display_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     server_sequence: Mapped[int] = mapped_column(Integer, index=True, default=0, nullable=False)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(100), index=True, nullable=True)
 
     alarm_type: Mapped["AlarmType"] = relationship("AlarmType", back_populates="alarms")
     created_by_user: Mapped[Optional["User"]] = relationship("User", back_populates="created_alarms")

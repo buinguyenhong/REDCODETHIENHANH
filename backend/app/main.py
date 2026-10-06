@@ -13,7 +13,7 @@ from app.database import engine, Base, AsyncSessionLocal
 from app.api import api_router
 from app.core.websocket_manager import manager
 from app.core.security import hash_device_token, decode_access_token
-from app.models import Station, User, StationStatus
+from app.models import Station, User, StationStatus, AlarmEvent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -126,6 +126,27 @@ async def websocket_endpoint(
                     elif msg_type == "AUDIO_STATE_CHANGED":
                         audio_ready = bool(msg.get("audio_ready", False))
                         await manager.update_heartbeat(station_code, audio_ready=audio_ready)
+
+                    elif msg_type == "STATION_EVENT":
+                        event_type = msg.get("event_type")
+                        alarm_id = msg.get("alarm_id")
+                        metadata = msg.get("metadata", {})
+                        if event_type and alarm_id:
+                            now = datetime.now(timezone.utc)
+                            async with AsyncSessionLocal() as session:
+                                st = (await session.execute(
+                                    select(Station.id).where(Station.station_code == station_code)
+                                )).scalar_one_or_none()
+                                ev = AlarmEvent(
+                                    alarm_id=alarm_id,
+                                    station_id=st,
+                                    event_type=event_type,
+                                    event_time=now,
+                                    event_metadata=metadata,
+                                    created_at=now
+                                )
+                                session.add(ev)
+                                await session.commit()
 
                     elif msg_type == "PING":
                         await websocket.send_text(json.dumps({"type": "PONG"}))

@@ -22,12 +22,23 @@ export default function OperatorDashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  const isPermitted = (type) => {
+    if (user?.role === 'ADMIN') return true;
+    if (!type.allowed_department_ids || type.allowed_department_ids.length === 0) return true;
+    return user?.department_id && type.allowed_department_ids.includes(user.department_id);
+  };
+
   const loadAlarmTypes = async () => {
     try {
       const data = await api.getAlarmTypes(true);
       setAlarmTypes(data);
-      if (data.length > 0 && !selectedType) {
-        setSelectedType(data[0]);
+      const permitted = data.filter((t) => {
+        if (user?.role === 'ADMIN') return true;
+        if (!t.allowed_department_ids || t.allowed_department_ids.length === 0) return true;
+        return user?.department_id && t.allowed_department_ids.includes(user.department_id);
+      });
+      if (permitted.length > 0 && (!selectedType || !permitted.some((p) => p.id === selectedType.id))) {
+        setSelectedType(permitted[0]);
       }
     } catch (e) {
       console.error('Lỗi tải danh mục báo động:', e);
@@ -147,13 +158,17 @@ export default function OperatorDashboard() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {alarmTypes.map((type) => {
                     const isSelected = selectedType?.id === type.id;
+                    const hasPermission = isPermitted(type);
                     return (
                       <button
                         key={type.id}
                         type="button"
-                        onClick={() => setSelectedType(type)}
+                        disabled={!hasPermission}
+                        onClick={() => hasPermission && setSelectedType(type)}
                         className={`p-5 rounded-xl text-left transition-all border-2 flex flex-col justify-between ${
-                          isSelected
+                          !hasPermission
+                            ? 'opacity-50 cursor-not-allowed bg-slate-100 border-slate-200'
+                            : isSelected
                             ? 'border-red-600 bg-red-50/40 shadow-md ring-2 ring-red-100 scale-[1.01]'
                             : 'border-slate-200 bg-slate-50/60 hover:border-slate-300 hover:bg-slate-100/70'
                         }`}
@@ -167,6 +182,11 @@ export default function OperatorDashboard() {
                           </span>
                           {isSelected && (
                             <CheckCircle className="w-5 h-5 text-red-600" />
+                          )}
+                          {!hasPermission && (
+                            <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded">
+                              KHÔNG ĐỦ QUYỀN
+                            </span>
                           )}
                         </div>
                         <div className="font-bold text-slate-900 text-base md:text-lg mb-1">{type.name}</div>

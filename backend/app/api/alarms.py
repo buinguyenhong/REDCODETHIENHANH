@@ -74,12 +74,34 @@ async def create_alarm(
     - Xác định Receiver Group để gửi WebSocket tới đúng trạm nhận
     - Đẩy n8n webhook ở background (không chặn còi báo động)
     """
-    # 1. Validate Alarm Type
+    # 1. Idempotency check (within 60s / duplicate submissions)
+    if alarm_in.idempotency_key:
+        stmt = (
+            select(Alarm)
+            .options(
+                selectinload(Alarm.alarm_type).selectinload(AlarmType.receiver_group),
+                selectinload(Alarm.source_department),
+                selectinload(Alarm.created_by_user),
+                selectinload(Alarm.events)
+            )
+            .where(Alarm.idempotency_key == alarm_in.idempotency_key)
+        )
+        existing = (await db.execute(stmt)).scalar_one_or_none()
+        if existing:
+            return AlarmOut.model_validate(existing)
+
+    # 2. Validate Alarm Type
     alarm_type = await db.get(AlarmType, alarm_in.alarm_type_id)
     if not alarm_type or not alarm_type.enabled:
         raise HTTPException(status_code=400, detail="Loại báo động không tồn tại hoặc đã bị khóa")
 
-    # 2. Get department info
+    # 3. Department authorization check
+    if current_user.role != UserRole.ADMIN.value:
+        if alarm_type.allowed_department_ids and len(alarm_type.allowed_department_ids) > 0:
+            if not current_user.department_id or current_user.department_id not in alarm_type.allowed_department_ids:
+                raise HTTPException(status_code=403, detail="Khoa/phòng của bạn không có quyền phát loại báo động này")
+
+    # 4. Get department info
     dept_id = alarm_in.source_department_id or current_user.department_id
     dept_name = "Toàn viện"
     if dept_id:
@@ -87,14 +109,14 @@ async def create_alarm(
         if dept:
             dept_name = dept.name
 
-    # 3. Calculate sequence number
+    # 5. Calculate sequence number
     seq_stmt = select(func.coalesce(func.max(Alarm.server_sequence), 0))
     current_seq = (await db.execute(seq_stmt)).scalar() or 0
     new_seq = current_seq + 1
 
     now = datetime.now(timezone.utc)
 
-    # 4. Create Alarm
+    # 6. Create Alarm
     alarm = Alarm(
         alarm_type_id=alarm_type.id,
         created_by_user_id=current_user.id,
@@ -103,6 +125,7 @@ async def create_alarm(
         note=alarm_in.note or "",
         status=AlarmStatus.ACTIVE.value,
         server_sequence=new_seq,
+        idempotency_key=alarm_in.idempotency_key,
         created_at=now,
         activated_at=now
     )

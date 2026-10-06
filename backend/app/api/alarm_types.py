@@ -47,6 +47,7 @@ async def create_alarm_type(
         display_color=type_in.display_color,
         receiver_group_id=type_in.receiver_group_id,
         audio_sequence=type_in.audio_sequence or [],
+        allowed_department_ids=type_in.allowed_department_ids or [],
         repeat_count=type_in.repeat_count,
         repeat_interval_ms=type_in.repeat_interval_ms
     )

@@ -44,3 +44,25 @@ async def get_health(db: AsyncSession = Depends(get_db)):
         active_stations=active_stations,
         total_stations=total_stations
     )
+
+@router.get("/db")
+async def health_database(db: AsyncSession = Depends(get_db)):
+    import time
+    start = time.perf_counter()
+    try:
+        await db.execute(text("SELECT 1"))
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        return {"status": "ok", "latency_ms": latency_ms}
+    except Exception as e:
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        return {"status": "error", "latency_ms": latency_ms, "detail": str(e)}
+
+@router.get("/websocket")
+async def health_websocket():
+    return {
+        "status": "ok",
+        "active_connections": len(manager.active_dashboards) + len(manager.active_stations),
+        "dashboard_connections": len(manager.active_dashboards),
+        "active_stations_count": len(manager.active_stations),
+        "active_station_codes": list(manager.active_stations.keys())
+    }

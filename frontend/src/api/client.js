@@ -71,6 +71,7 @@ export const api = {
   getStations: (statusFilter) =>
     apiRequest(`/stations${statusFilter ? `?status_filter=${statusFilter}` : ''}`),
   getStation: (id) => apiRequest(`/stations/${id}`),
+  getStationActiveAlarms: (stationCode) => apiRequest(`/stations/${stationCode}/active-alarms`),
   registerStation: (data) =>
     apiRequest('/stations/register', { method: 'POST', body: JSON.stringify(data) }),
   stationHeartbeat: (data) =>
@@ -145,5 +146,7 @@ export const api = {
     return apiRequest(`/system/events?${params.toString()}`);
   },
   getHealth: () => apiRequest('/health'),
+  getHealthDb: () => apiRequest('/health/db'),
+  getHealthWebsocket: () => apiRequest('/health/websocket'),
 };
 

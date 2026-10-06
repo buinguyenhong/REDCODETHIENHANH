@@ -127,6 +127,7 @@ class AlarmTypeBase(BaseModel):
     display_color: str = "#dc2626"
     receiver_group_id: Optional[int] = None
     audio_sequence: Optional[List[str]] = []
+    allowed_department_ids: Optional[List[int]] = []
     repeat_count: int = 3
     repeat_interval_ms: int = 1500
 
@@ -141,6 +142,7 @@ class AlarmTypeUpdate(BaseModel):
     display_color: Optional[str] = None
     receiver_group_id: Optional[int] = None
     audio_sequence: Optional[List[str]] = None
+    allowed_department_ids: Optional[List[int]] = None
     repeat_count: Optional[int] = None
     repeat_interval_ms: Optional[int] = None
 
@@ -176,6 +178,7 @@ class AlarmOut(BaseModel):
     note: str
     status: str
     server_sequence: int
+    idempotency_key: Optional[str] = None
     created_at: datetime
     activated_at: Optional[datetime] = None
     display_completed_at: Optional[datetime] = None

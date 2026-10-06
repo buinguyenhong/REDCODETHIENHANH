@@ -54,6 +54,21 @@ export function WebSocketProvider({ children }) {
         reconnectAttemptsRef.current = 0;
         console.log('[WebSocket] Kết nối thành công tới máy chủ Redcode');
 
+        // Sync missed/active alarms for this station on connect/reconnect
+        if (stationConfig && stationConfig.station_code) {
+          api.getStationActiveAlarms(stationConfig.station_code)
+            .then((alarms) => {
+              if (alarms && alarms.length > 0) {
+                setActiveAlarms((prev) => {
+                  const existingIds = new Set(prev.map((a) => a.alarm_id));
+                  const newAlarms = alarms.filter((a) => !existingIds.has(a.alarm_id));
+                  return [...prev, ...newAlarms];
+                });
+              }
+            })
+            .catch((err) => console.warn('Lỗi đồng bộ báo động chủ động:', err));
+        }
+
         // Start heartbeat every 5 seconds
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
@@ -112,6 +127,22 @@ export function WebSocketProvider({ children }) {
             if (prev.some((a) => a.alarm_id === alarm.alarm_id)) return prev;
             return [...prev, alarm]; // Enqueue in FIFO order
           });
+
+          // Send RECEIVED audit event back to server
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
+            wsRef.current.send(JSON.stringify({
+              type: 'STATION_EVENT',
+              event_type: 'RECEIVED',
+              alarm_id: alarm.alarm_id,
+              metadata: { station_code: stationConfig.station_code }
+            }));
+          }
+        }
+        break;
+
+      case 'ALARM_CANCELLED':
+        if (msg.alarm_id) {
+          setActiveAlarms((prev) => prev.filter((a) => a.alarm_id !== msg.alarm_id));
         }
         break;
 
@@ -129,6 +160,9 @@ export function WebSocketProvider({ children }) {
         break;
 
       default:
+        if (msg.status === 'CANCELLED' && msg.alarm_id) {
+          setActiveAlarms((prev) => prev.filter((a) => a.alarm_id !== msg.alarm_id));
+        }
         break;
     }
   };
@@ -141,13 +175,35 @@ export function WebSocketProvider({ children }) {
         soundPlayer.playAlarmSequence(
           currentAlarm.audio_sequence,
           currentAlarm.repeat_count || 4,
-          currentAlarm.repeat_interval_ms || 1200
+          currentAlarm.repeat_interval_ms || 1200,
+          () => {
+            // onStart: Send AUDIO_STARTED audit event
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
+              wsRef.current.send(JSON.stringify({
+                type: 'STATION_EVENT',
+                event_type: 'AUDIO_STARTED',
+                alarm_id: currentAlarm.alarm_id,
+                metadata: { station_code: stationConfig.station_code }
+              }));
+            }
+          },
+          () => {
+            // onComplete: Send AUDIO_COMPLETED audit event
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
+              wsRef.current.send(JSON.stringify({
+                type: 'STATION_EVENT',
+                event_type: 'AUDIO_COMPLETED',
+                alarm_id: currentAlarm.alarm_id,
+                metadata: { station_code: stationConfig.station_code }
+              }));
+            }
+          }
         );
       }
     } else {
       soundPlayer.stop();
     }
-  }, [activeAlarms]);
+  }, [activeAlarms, stationConfig]);
 
   // Local Dismiss of current alarm
   const dismissCurrentAlarm = async (note = '') => {

@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import (
     Station, ReceiverGroup, ReceiverGroupStation, 
-    Alarm, AlarmEvent, AlarmStatus, StationStatus, SystemEvent, User
+    Alarm, AlarmType, AlarmEvent, AlarmStatus, StationStatus, SystemEvent, User
 )
 from app.schemas import StationRegister, StationHeartbeat, StationDismiss, StationOut
 from app.core.security import hash_device_token
@@ -148,6 +148,73 @@ async def station_heartbeat(
 
     return {"status": "ok", "timestamp": now.isoformat()}
 
+@router.get("/{station_code}/active-alarms")
+async def get_station_active_alarms(
+    station_code: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Sync missed/ongoing active alarms for a station upon reconnect or kiosk load.
+    Returns undismissed active alarms in FIFO order (by server_sequence).
+    """
+    stmt = (
+        select(Station)
+        .options(selectinload(Station.receiver_groups))
+        .where(Station.station_code == station_code)
+    )
+    station = (await db.execute(stmt)).scalar_one_or_none()
+    if not station or not station.enabled:
+        raise HTTPException(status_code=404, detail="Trạm không tồn tại hoặc đã bị khóa")
+
+    group_ids = [rg.id for rg in station.receiver_groups]
+
+    # Query all ACTIVE alarms
+    alarm_stmt = (
+        select(Alarm)
+        .options(
+            selectinload(Alarm.alarm_type).selectinload(AlarmType.receiver_group),
+            selectinload(Alarm.source_department)
+        )
+        .where(Alarm.status == AlarmStatus.ACTIVE.value)
+        .order_by(Alarm.server_sequence.asc())
+    )
+    all_active = (await db.execute(alarm_stmt)).scalars().all()
+
+    # Find alarms that this station has already dismissed
+    dismissed_stmt = select(AlarmEvent.alarm_id).where(
+        AlarmEvent.station_id == station.id,
+        AlarmEvent.event_type == "DISMISSED"
+    )
+    dismissed_ids = set((await db.execute(dismissed_stmt)).scalars().all())
+
+    result = []
+    for a in all_active:
+        if a.id in dismissed_ids:
+            continue
+        # Check receiver group mapping: None means all stations, else must match
+        rg_id = a.alarm_type.receiver_group_id if a.alarm_type else None
+        if rg_id is not None and rg_id not in group_ids:
+            continue
+
+        dept_name = a.source_department.name if a.source_department else "Toàn viện"
+        result.append({
+            "alarm_id": a.id,
+            "code": a.alarm_type.code if a.alarm_type else "",
+            "name": a.alarm_type.name if a.alarm_type else "",
+            "department": dept_name,
+            "location": a.source_location or dept_name,
+            "note": a.note,
+            "display_color": a.alarm_type.display_color if a.alarm_type else "#dc2626",
+            "priority": a.alarm_type.priority if a.alarm_type else 1,
+            "repeat_count": a.alarm_type.repeat_count if a.alarm_type else 3,
+            "repeat_interval_ms": a.alarm_type.repeat_interval_ms if a.alarm_type else 3000,
+            "audio_sequence": a.alarm_type.audio_sequence or [] if a.alarm_type else [],
+            "server_sequence": a.server_sequence,
+            "created_at": a.created_at.isoformat() if a.created_at else ""
+        })
+
+    return result
+
 @router.post("/dismiss")
 async def dismiss_station_alarm(
     dismiss_data: StationDismiss,
@@ -157,13 +224,19 @@ async def dismiss_station_alarm(
     LOCAL DISMISS:
     Only acknowledges the alarm for the specified station.
     The alarm continues on other stations until dismissed locally.
+    When all target stations have dismissed, transitions alarm to DISPLAY_COMPLETED.
     """
     stmt = select(Station).where(Station.station_code == dismiss_data.station_code)
     station = (await db.execute(stmt)).scalar_one_or_none()
     if not station:
         raise HTTPException(status_code=404, detail="Trạm không tồn tại")
 
-    alarm = await db.get(Alarm, dismiss_data.alarm_id)
+    alarm_stmt = (
+        select(Alarm)
+        .options(selectinload(Alarm.alarm_type))
+        .where(Alarm.id == dismiss_data.alarm_id)
+    )
+    alarm = (await db.execute(alarm_stmt)).scalar_one_or_none()
     if not alarm:
         raise HTTPException(status_code=404, detail="Báo động không tồn tại")
 
@@ -185,6 +258,45 @@ async def dismiss_station_alarm(
     db.add(event)
     await db.commit()
 
+    # Check if all target stations have dismissed to auto-transition to DISPLAY_COMPLETED
+    alarm_completed = False
+    if alarm.alarm_type and alarm.alarm_type.receiver_group_id:
+        rg_id = alarm.alarm_type.receiver_group_id
+        target_stmt = (
+            select(Station.id)
+            .join(ReceiverGroupStation, Station.id == ReceiverGroupStation.station_id)
+            .where(
+                ReceiverGroupStation.receiver_group_id == rg_id,
+                Station.enabled == True
+            )
+        )
+        target_ids = set((await db.execute(target_stmt)).scalars().all())
+    else:
+        # All enabled stations
+        all_st_stmt = select(Station.id).where(Station.enabled == True)
+        target_ids = set((await db.execute(all_st_stmt)).scalars().all())
+
+    # Get all stations that have dismissed this alarm
+    dismissed_stmt = select(AlarmEvent.station_id).where(
+        AlarmEvent.alarm_id == alarm.id,
+        AlarmEvent.event_type == "DISMISSED"
+    )
+    dismissed_ids = set((await db.execute(dismissed_stmt)).scalars().all())
+
+    if target_ids and target_ids.issubset(dismissed_ids) and alarm.status == AlarmStatus.ACTIVE.value:
+        alarm.status = AlarmStatus.DISPLAY_COMPLETED.value
+        alarm.display_completed_at = now
+        completed_event = AlarmEvent(
+            alarm_id=alarm.id,
+            event_type="DISPLAY_COMPLETED",
+            event_time=now,
+            event_metadata={"reason": "All target stations acknowledged"},
+            created_at=now
+        )
+        db.add(completed_event)
+        await db.commit()
+        alarm_completed = True
+
     # Notify dashboards that this station dismissed the alarm
     await manager.broadcast_to_dashboards({
         "type": "ALARM_ACKNOWLEDGED",
@@ -192,10 +304,16 @@ async def dismiss_station_alarm(
         "station_id": station.id,
         "station_code": station.station_code,
         "station_name": station.name,
+        "alarm_completed": alarm_completed,
         "timestamp": now.isoformat()
     })
 
-    return {"status": "dismissed_locally", "alarm_id": alarm.id, "station_code": station.station_code}
+    return {
+        "status": "dismissed_locally",
+        "alarm_id": alarm.id,
+        "station_code": station.station_code,
+        "alarm_completed": alarm_completed
+    }
 
 @router.post("/{station_id}/audio-test")
 async def test_station_audio(

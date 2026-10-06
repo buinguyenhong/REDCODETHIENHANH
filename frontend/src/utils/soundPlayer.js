@@ -44,12 +44,16 @@ class SoundPlayer {
     }
   }
 
-  playAlarmSequence(audioUrls, repeatCount = 3, intervalMs = 1500) {
+  playAlarmSequence(audioUrls, repeatCount = 3, intervalMs = 1500, onStart = null, onComplete = null) {
     this.stop();
-    if (!audioUrls || audioUrls.length === 0) return;
+    if (!audioUrls || audioUrls.length === 0) {
+      if (onComplete) onComplete();
+      return;
+    }
 
     this.isPlaying = true;
     let currentIteration = 0;
+    let started = false;
 
     const playCycle = () => {
       if (!this.isPlaying) return;
@@ -63,6 +67,7 @@ class SoundPlayer {
             this.repeatTimer = setTimeout(playCycle, intervalMs);
           } else {
             this.isPlaying = false;
+            if (onComplete) onComplete();
           }
           return;
         }
@@ -73,12 +78,20 @@ class SoundPlayer {
         this.currentAudio = new Audio(url);
         this.currentAudio.play().then(() => {
           this.isAudioReady = true;
+          if (!started) {
+            started = true;
+            if (onStart) onStart();
+          }
           this.currentAudio.onended = () => {
             playNextFile();
           };
         }).catch((err) => {
           console.warn('Browser blocked sound playback:', err);
           this.isAudioReady = false;
+          if (!started) {
+            started = true;
+            if (onStart) onStart();
+          }
           // Continue to next sequence anyway
           this.repeatTimer = setTimeout(playNextFile, 500);
         });
