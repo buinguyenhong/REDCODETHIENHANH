@@ -62,7 +62,7 @@ class StationRegister(BaseModel):
     name: str
     department_id: Optional[int] = None
     location: str = ""
-    device_token: str
+    device_token: Optional[str] = None # Generated securely by server if omitted
     receiver_group_ids: Optional[List[int]] = None
 
 class StationHeartbeat(BaseModel):
@@ -75,7 +75,7 @@ class StationHeartbeat(BaseModel):
 class StationDismiss(BaseModel):
     alarm_id: int
     station_code: str
-    device_token: Optional[str] = None
+    device_token: str # Strictly required for authentication
     note: Optional[str] = ""
 
 class StationOut(BaseModel):
@@ -94,6 +94,7 @@ class StationOut(BaseModel):
     department: Optional[DepartmentOut] = None
     receiver_groups: List["ReceiverGroupOut"] = []
     created_at: datetime
+    raw_device_token: Optional[str] = None # Populated once on registration / rotation
     model_config = ConfigDict(from_attributes=True)
 
 # --- Receiver Groups ---
@@ -152,6 +153,38 @@ class AlarmTypeOut(AlarmTypeBase):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+# --- Department Alarm Permissions ---
+class DepartmentAlarmPermissionCreate(BaseModel):
+    department_id: int
+    alarm_type_id: int
+    enabled: bool = True
+
+class DepartmentAlarmPermissionOut(BaseModel):
+    id: int
+    department_id: int
+    alarm_type_id: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+# --- Alarm Station States ---
+class AlarmStationStateOut(BaseModel):
+    id: int
+    alarm_id: int
+    station_id: int
+    state: str
+    received_at: Optional[datetime] = None
+    displayed_at: Optional[datetime] = None
+    audio_started_at: Optional[datetime] = None
+    audio_completed_at: Optional[datetime] = None
+    dismissed_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 # --- Alarms ---
 class AlarmCreate(BaseModel):
     alarm_type_id: int
@@ -181,12 +214,26 @@ class AlarmOut(BaseModel):
     idempotency_key: Optional[str] = None
     created_at: datetime
     activated_at: Optional[datetime] = None
-    display_completed_at: Optional[datetime] = None
     cancelled_at: Optional[datetime] = None
     alarm_type: Optional[AlarmTypeOut] = None
     source_department: Optional[DepartmentOut] = None
     created_by_user: Optional[UserOut] = None
     events: List[AlarmEventOut] = []
+    station_states: List[AlarmStationStateOut] = []
+    model_config = ConfigDict(from_attributes=True)
+
+# --- Notification Outbox ---
+class NotificationOutboxOut(BaseModel):
+    id: int
+    event_type: str
+    alarm_id: Optional[int] = None
+    payload: Dict[str, Any]
+    status: str
+    attempt_count: int
+    next_attempt_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime
+    sent_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 # --- Audio Files ---

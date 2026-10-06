@@ -63,8 +63,13 @@ class ConnectionManager:
             self.active_dashboards.add(websocket)
         logger.info("Dashboard client connected")
 
-    async def disconnect_station(self, station_code: str):
+    async def disconnect_station(self, station_code: str, websocket: Optional[WebSocket] = None):
         async with self._lock:
+            current_ws = self.active_stations.get(station_code)
+            if websocket is not None and current_ws is not websocket:
+                logger.info(f"Ignored disconnect from obsolete socket for station: {station_code}")
+                return
+
             if station_code in self.active_stations:
                 del self.active_stations[station_code]
             if station_code in self.last_heartbeats:
@@ -136,14 +141,14 @@ class ConnectionManager:
                 await ws.send_text(json.dumps(message))
             except Exception as e:
                 logger.warning(f"Failed to send alarm to station {code}: {e}")
-                dead_stations.append(code)
+                dead_stations.append((code, ws))
 
         # 2. Send to all dashboard clients
         await self.broadcast_to_dashboards(message)
 
         # Cleanup any dead sockets
-        for code in dead_stations:
-            await self.disconnect_station(code)
+        for code, ws in dead_stations:
+            await self.disconnect_station(code, ws)
 
     async def broadcast_to_dashboards(self, message: dict):
         dead_dashboards = []
@@ -169,7 +174,7 @@ class ConnectionManager:
             await ws.send_text(json.dumps(message))
             return True
         except Exception:
-            await self.disconnect_station(station_code)
+            await self.disconnect_station(station_code, ws)
             return False
 
     async def _update_station_db_status(self, station_code: str, connected: bool):

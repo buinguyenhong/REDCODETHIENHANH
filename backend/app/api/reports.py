@@ -1,6 +1,6 @@
 import io
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any, Tuple
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, desc
@@ -9,10 +9,37 @@ from sqlalchemy.orm import selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from app.database import get_db
-from app.models import Alarm, AlarmType, Department, Station, SystemEvent, User
+from app.models import Alarm, AlarmType, Department, Station, SystemEvent, User, AlarmStationState
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+def parse_date_range(from_date_str: Optional[str], to_date_str: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Parses start and end dates with full-day coverage (Section 27).
+    If to_date is YYYY-MM-DD, encompasses up to 23:59:59.999999.
+    """
+    start_dt = None
+    end_dt = None
+    if from_date_str and from_date_str.strip():
+        clean_str = from_date_str.strip()
+        dt = datetime.fromisoformat(clean_str)
+        if len(clean_str) <= 10:
+            dt = dt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+        elif dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        start_dt = dt
+
+    if to_date_str and to_date_str.strip():
+        clean_str = to_date_str.strip()
+        dt = datetime.fromisoformat(clean_str)
+        if len(clean_str) <= 10:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+        elif dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        end_dt = dt
+
+    return start_dt, end_dt
 
 @router.get("/summary")
 async def get_summary_report(
@@ -21,14 +48,16 @@ async def get_summary_report(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
+    start_dt, end_dt = parse_date_range(from_date, to_date)
+
     stmt = select(Alarm).options(
         selectinload(Alarm.alarm_type),
         selectinload(Alarm.source_department)
     )
-    if from_date:
-        stmt = stmt.where(Alarm.created_at >= datetime.fromisoformat(from_date))
-    if to_date:
-        stmt = stmt.where(Alarm.created_at <= datetime.fromisoformat(to_date))
+    if start_dt:
+        stmt = stmt.where(Alarm.created_at >= start_dt)
+    if end_dt:
+        stmt = stmt.where(Alarm.created_at <= end_dt)
 
     alarms = (await db.execute(stmt)).scalars().all()
 
@@ -44,8 +73,13 @@ async def get_summary_report(
         by_dept[d_name] = by_dept.get(d_name, 0) + 1
         by_status[a.status] = by_status.get(a.status, 0) + 1
 
-    # Count offline events from system_events
+    # Filter offline events with the exact same date range (Section 28)
     offline_stmt = select(func.count(SystemEvent.id)).where(SystemEvent.event_type == "DEVICE_DISCONNECTED")
+    if start_dt:
+        offline_stmt = offline_stmt.where(SystemEvent.created_at >= start_dt)
+    if end_dt:
+        offline_stmt = offline_stmt.where(SystemEvent.created_at <= end_dt)
+
     offline_count = (await db.execute(offline_stmt)).scalar() or 0
 
     return {
@@ -63,19 +97,22 @@ async def export_alarms_xlsx(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
+    start_dt, end_dt = parse_date_range(from_date, to_date)
+
     stmt = (
         select(Alarm)
         .options(
             selectinload(Alarm.alarm_type),
             selectinload(Alarm.source_department),
-            selectinload(Alarm.created_by_user)
+            selectinload(Alarm.created_by_user),
+            selectinload(Alarm.station_states).selectinload(AlarmStationState.station)
         )
         .order_by(Alarm.created_at.asc())
     )
-    if from_date:
-        stmt = stmt.where(Alarm.created_at >= datetime.fromisoformat(from_date))
-    if to_date:
-        stmt = stmt.where(Alarm.created_at <= datetime.fromisoformat(to_date))
+    if start_dt:
+        stmt = stmt.where(Alarm.created_at >= start_dt)
+    if end_dt:
+        stmt = stmt.where(Alarm.created_at <= end_dt)
 
     alarms = (await db.execute(stmt)).scalars().all()
 
@@ -96,7 +133,7 @@ async def export_alarms_xlsx(
 
     headers = [
         "STT", "Thời gian", "Mã báo động", "Tên báo động",
-        "Khoa/Phòng", "Vị trí", "Ghi chú", "Người phát", "Trạng thái", "Thứ tự Server"
+        "Khoa/Phòng", "Vị trí", "Ghi chú", "Người phát", "Trạng thái", "Thứ tự Server", "Chi tiết trạm nhận (States)"
     ]
     ws.append(headers)
 
@@ -116,6 +153,17 @@ async def export_alarms_xlsx(
         dept_name = a.source_department.name if a.source_department else ""
         user_name = a.created_by_user.display_name if a.created_by_user else ""
 
+        # Summarize station states
+        station_summaries = []
+        if a.station_states:
+            for st in a.station_states:
+                st_code = st.station.station_code if st.station else f"ID-{st.station_id}"
+                st_text = f"{st_code}: {st.state}"
+                if st.dismissed_at:
+                    st_text += f" (Dismiss: {st.dismissed_at.strftime('%H:%M:%S')})"
+                station_summaries.append(st_text)
+        stations_str = "; ".join(station_summaries) if station_summaries else "Chưa có trạm phản hồi"
+
         row_data = [
             idx,
             created_str,
@@ -126,7 +174,8 @@ async def export_alarms_xlsx(
             a.note,
             user_name,
             a.status,
-            a.server_sequence
+            a.server_sequence,
+            stations_str
         ]
         ws.append(row_data)
 
@@ -138,22 +187,27 @@ async def export_alarms_xlsx(
             cell.border = thin_border
             if col_idx in [1, 9, 10]:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            else:
-                cell.alignment = Alignment(vertical="center")
 
     # Column widths
-    widths = [6, 20, 16, 26, 22, 22, 35, 18, 16, 14]
-    for i, w in enumerate(widths, 1):
-        col_letter = chr(64 + i) if i <= 26 else f"A{chr(64 + i - 26)}"
-        ws.column_dimensions[col_letter].width = w
+    ws.column_dimensions['A'].width = 6
+    ws.column_dimensions['B'].width = 20
+    ws.column_dimensions['C'].width = 16
+    ws.column_dimensions['D'].width = 26
+    ws.column_dimensions['E'].width = 24
+    ws.column_dimensions['F'].width = 26
+    ws.column_dimensions['G'].width = 32
+    ws.column_dimensions['H'].width = 20
+    ws.column_dimensions['I'].width = 14
+    ws.column_dimensions['J'].width = 14
+    ws.column_dimensions['K'].width = 40
 
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
 
-    filename = f"redcode_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"BaoCao_Redcode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
-        output,
+        buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )

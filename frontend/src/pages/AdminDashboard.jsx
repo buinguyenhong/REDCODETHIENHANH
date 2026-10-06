@@ -262,7 +262,7 @@ export default function AdminDashboard() {
         name: stationForm.name.trim(),
         department_id: stationForm.department_id ? parseInt(stationForm.department_id, 10) : null,
         location: stationForm.location.trim(),
-        device_token: stationForm.device_token.trim() || (editItem ? '' : `token-${Date.now()}`),
+        device_token: stationForm.device_token.trim() || undefined,
         receiver_group_ids: stationForm.receiver_group_ids.map((id) => parseInt(id, 10)),
       };
 
@@ -270,7 +270,10 @@ export default function AdminDashboard() {
         await api.updateStation(editItem.id, payload);
         notify(`Đã cập nhật trạm nhận ${payload.station_code}`);
       } else {
-        await api.registerStation(payload);
+        const res = await api.registerStation(payload);
+        if (res && res.raw_device_token) {
+          alert(`Đã tạo trạm ${payload.station_code} thành công!\n\nQUAN TRỌNG: Mật khẩu kết nối bảo mật (Device Token) là:\n${res.raw_device_token}\n\nHãy sao chép mã này vào máy Kiosk trạm. Hệ thống sẽ không hiển thị lại mã này!`);
+        }
         notify(`Đã đăng ký trạm nhận mới ${payload.station_code}`);
       }
       setModalType(null);
@@ -1343,7 +1346,7 @@ export default function AdminDashboard() {
                   type="text"
                   value={stationForm.device_token}
                   onChange={(e) => setStationForm({ ...stationForm, device_token: e.target.value })}
-                  placeholder={editItem ? 'Để trống nếu không đổi token' : 'VD: station-token-cc-02'}
+                  placeholder={editItem ? 'Để trống nếu không đổi token' : 'Để trống để server tự sinh token ngẫu nhiên an toàn'}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-900"
                 />
               </div>

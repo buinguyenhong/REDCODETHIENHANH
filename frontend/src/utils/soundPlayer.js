@@ -44,7 +44,7 @@ class SoundPlayer {
     }
   }
 
-  playAlarmSequence(audioUrls, repeatCount = 3, intervalMs = 1500, onStart = null, onComplete = null) {
+  playAlarmSequence(audioUrls, repeatCount = 3, intervalMs = 1500, onStart = null, onComplete = null, onError = null) {
     this.stop();
     if (!audioUrls || audioUrls.length === 0) {
       if (onComplete) onComplete();
@@ -88,6 +88,9 @@ class SoundPlayer {
         }).catch((err) => {
           console.warn('Browser blocked sound playback:', err);
           this.isAudioReady = false;
+          if (onError) {
+            onError(err);
+          }
           if (!started) {
             started = true;
             if (onStart) onStart();

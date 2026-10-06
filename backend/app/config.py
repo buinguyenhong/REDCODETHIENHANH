@@ -4,6 +4,8 @@ from pydantic import field_validator
 
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
+    DEMO_MODE: bool = True
+    INITIAL_ADMIN_PASSWORD: str = ""
     DATABASE_URL: str = "sqlite+aiosqlite:///./redcode.db"
     SECRET_KEY: str = "redcode-secret-key-bvth-2026-production-baseline"
     ALGORITHM: str = "HS256"

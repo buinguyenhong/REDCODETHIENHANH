@@ -111,6 +111,18 @@ async def test_active_alarms_sync_and_display_completed():
         admin_token = admin_res.json()["access_token"]
         headers = {"Authorization": f"Bearer {admin_token}"}
 
+        # Provision station dynamically
+        reg_res = await ac.post("/api/stations/register", headers=headers, json={
+            "station_code": "ST-SYNC-TEST",
+            "name": "Kiosk Sync Test",
+            "department_id": 2,
+            "location": "Phòng Đồng Bộ",
+            "receiver_group_ids": [1, 2]
+        })
+        assert reg_res.status_code == 201
+        st_token = reg_res.json()["raw_device_token"]
+        st_headers = {"X-Station-Token": st_token}
+
         # Create alarm
         alarm_res = await ac.post("/api/alarms", headers=headers, json={
             "alarm_type_id": 1,
@@ -119,22 +131,23 @@ async def test_active_alarms_sync_and_display_completed():
         })
         alarm_id = alarm_res.json()["id"]
 
-        # Check sync endpoint for ST-CC-01
-        sync_res = await ac.get("/api/stations/ST-CC-01/active-alarms")
+        # Check sync endpoint for ST-SYNC-TEST with station token
+        sync_res = await ac.get("/api/stations/ST-SYNC-TEST/active-alarms", headers=st_headers)
         assert sync_res.status_code == 200
         active_list = sync_res.json()
         assert any(a["alarm_id"] == alarm_id for a in active_list)
 
-        # ST-CC-01 dismisses the alarm locally
+        # ST-SYNC-TEST dismisses the alarm locally
         d1 = await ac.post("/api/stations/dismiss", json={
             "alarm_id": alarm_id,
-            "station_code": "ST-CC-01",
-            "note": "Acknowledged CC-01"
+            "station_code": "ST-SYNC-TEST",
+            "device_token": st_token,
+            "note": "Acknowledged SYNC-TEST"
         })
         assert d1.status_code == 200
 
-        # Now ST-CC-01 should no longer see it in active-alarms
-        sync_after = await ac.get("/api/stations/ST-CC-01/active-alarms")
+        # Now ST-SYNC-TEST should no longer see it in active-alarms
+        sync_after = await ac.get("/api/stations/ST-SYNC-TEST/active-alarms", headers=st_headers)
         assert not any(a["alarm_id"] == alarm_id for a in sync_after.json())
 
 @pytest.mark.asyncio

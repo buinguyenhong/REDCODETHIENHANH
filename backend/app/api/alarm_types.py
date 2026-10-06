@@ -5,8 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.database import get_db
-from app.models import AlarmType, ReceiverGroup, User
-from app.schemas import AlarmTypeCreate, AlarmTypeUpdate, AlarmTypeOut
+from app.models import AlarmType, ReceiverGroup, User, DepartmentAlarmPermission
+from app.schemas import AlarmTypeCreate, AlarmTypeUpdate, AlarmTypeOut, DepartmentAlarmPermissionOut, DepartmentAlarmPermissionCreate
 from app.api.deps import get_current_user, get_current_active_admin
 
 router = APIRouter(prefix="/alarm-types", tags=["Alarm Types"])
@@ -55,6 +55,16 @@ async def create_alarm_type(
     await db.commit()
     await db.refresh(alarm_type)
 
+    # Synchronize department_alarm_permissions relational records
+    if type_in.allowed_department_ids:
+        for d_id in type_in.allowed_department_ids:
+            db.add(DepartmentAlarmPermission(
+                department_id=d_id,
+                alarm_type_id=alarm_type.id,
+                enabled=True
+            ))
+        await db.commit()
+
     stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group)).where(AlarmType.id == alarm_type.id)
     created = (await db.execute(stmt)).scalar_one()
     return AlarmTypeOut.model_validate(created)
@@ -76,9 +86,34 @@ async def update_alarm_type(
     alarm_type.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
+    # Synchronize relational table department_alarm_permissions
+    if type_in.allowed_department_ids is not None:
+        await db.execute(
+            DepartmentAlarmPermission.__table__.delete().where(
+                DepartmentAlarmPermission.alarm_type_id == alarm_type.id
+            )
+        )
+        for d_id in type_in.allowed_department_ids:
+            db.add(DepartmentAlarmPermission(
+                department_id=d_id,
+                alarm_type_id=alarm_type.id,
+                enabled=True
+            ))
+        await db.commit()
+
     stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group)).where(AlarmType.id == alarm_type.id)
     updated = (await db.execute(stmt)).scalar_one()
     return AlarmTypeOut.model_validate(updated)
+
+@router.get("/{type_id}/permissions", response_model=List[DepartmentAlarmPermissionOut])
+async def get_alarm_type_permissions(
+    type_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_active_admin)
+):
+    stmt = select(DepartmentAlarmPermission).where(DepartmentAlarmPermission.alarm_type_id == type_id)
+    res = await db.execute(stmt)
+    return [DepartmentAlarmPermissionOut.model_validate(p) for p in res.scalars().all()]
 
 @router.delete("/{type_id}")
 async def delete_alarm_type(
@@ -92,4 +127,3 @@ async def delete_alarm_type(
     await db.delete(alarm_type)
     await db.commit()
     return {"message": "Đã xóa loại báo động"}
-

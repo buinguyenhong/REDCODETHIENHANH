@@ -71,7 +71,10 @@ export const api = {
   getStations: (statusFilter) =>
     apiRequest(`/stations${statusFilter ? `?status_filter=${statusFilter}` : ''}`),
   getStation: (id) => apiRequest(`/stations/${id}`),
-  getStationActiveAlarms: (stationCode) => apiRequest(`/stations/${stationCode}/active-alarms`),
+  getStationActiveAlarms: (stationCode, token) =>
+    apiRequest(`/stations/${stationCode}/active-alarms`, {
+      headers: token ? { 'X-Station-Token': token } : {},
+    }),
   registerStation: (data) =>
     apiRequest('/stations/register', { method: 'POST', body: JSON.stringify(data) }),
   stationHeartbeat: (data) =>

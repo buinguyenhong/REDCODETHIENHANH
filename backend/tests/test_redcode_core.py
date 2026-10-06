@@ -116,10 +116,31 @@ async def test_operator_create_alarm_success():
 async def test_station_heartbeat_and_local_dismiss():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Login as admin to provision station
+        admin_res = await ac.post("/api/auth/login", json={
+            "username": "admin",
+            "password": "admin123456"
+        })
+        admin_token = admin_res.json()["access_token"]
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        # Provision station dynamically
+        reg_res = await ac.post("/api/stations/register", headers=headers_admin, json={
+            "station_code": "ST-CORE-TEST",
+            "name": "Kiosk Core Test",
+            "department_id": 2,
+            "location": "Sảnh Test",
+            "receiver_group_ids": [1, 2]
+        })
+        assert reg_res.status_code == 201
+        st_data = reg_res.json()
+        st_token = st_data["raw_device_token"]
+        assert st_token is not None
+
         # Send station heartbeat
         hb_res = await ac.post("/api/stations/heartbeat", json={
-            "station_code": "ST-CC-01",
-            "device_token": "station-token-cc-01",
+            "station_code": "ST-CORE-TEST",
+            "device_token": st_token,
             "audio_ready": True,
             "client_ready": True
         })
@@ -139,17 +160,18 @@ async def test_station_heartbeat_and_local_dismiss():
         )
         alarm_id = alarm_res.json()["id"]
 
-        # Local dismiss at station ST-CC-01
+        # Local dismiss at station ST-CORE-TEST with station token
         dismiss_res = await ac.post("/api/stations/dismiss", json={
             "alarm_id": alarm_id,
-            "station_code": "ST-CC-01",
+            "station_code": "ST-CORE-TEST",
+            "device_token": st_token,
             "note": "Bác sĩ trực tiếp nhận"
         })
         assert dismiss_res.status_code == 200
         assert dismiss_res.json()["status"] == "dismissed_locally"
 
         # Verify global alarm record is STILL active (Local dismiss doesn't terminate for whole hospital)
-        check_alarm = await ac.get(f"/api/alarms/{alarm_id}")
+        check_alarm = await ac.get(f"/api/alarms/{alarm_id}", headers={"Authorization": f"Bearer {token}"})
         assert check_alarm.status_code == 200
         assert check_alarm.json()["status"] == "ACTIVE"
 

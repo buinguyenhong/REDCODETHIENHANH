@@ -92,12 +92,24 @@ async def test_50_concurrent_heartbeats():
     """
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Provision station dynamically to obtain real cryptographically secure token
+        admin_res = await ac.post("/api/auth/login", json={"username": "admin", "password": "admin123456"})
+        admin_token = admin_res.json()["access_token"]
+        reg_res = await ac.post("/api/stations/register", headers={"Authorization": f"Bearer {admin_token}"}, json={
+            "station_code": "ST-BENCH-50",
+            "name": "Benchmark Station 50",
+            "department_id": 2,
+            "receiver_group_ids": [1]
+        })
+        assert reg_res.status_code == 201
+        st_token = reg_res.json()["raw_device_token"]
+
         tasks = []
         for i in range(1, 51):
             tasks.append(
                 ac.post("/api/stations/heartbeat", json={
-                    "station_code": "ST-CC-01",
-                    "device_token": "station-token-cc-01",
+                    "station_code": "ST-BENCH-50",
+                    "device_token": st_token,
                     "audio_ready": True,
                     "client_ready": True
                 })

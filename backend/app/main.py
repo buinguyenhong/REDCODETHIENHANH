@@ -1,19 +1,25 @@
 import os
 import json
+import asyncio
 import logging
+from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.config import settings
 from app.database import engine, Base, AsyncSessionLocal
 from app.api import api_router
 from app.core.websocket_manager import manager
 from app.core.security import hash_device_token, decode_access_token
-from app.models import Station, User, StationStatus, AlarmEvent
+from app.models import (
+    Station, User, StationStatus, AlarmEvent, UserRole,
+    AlarmStationState, StationAlarmStateEnum
+)
+from app.core.n8n_outbox import outbox_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,50 +45,56 @@ async def lifespan(app: FastAPI):
     await manager.start_monitor(settings.STATION_OFFLINE_THRESHOLD_SECONDS)
     logger.info(f"Station offline monitor active (timeout: {settings.STATION_OFFLINE_THRESHOLD_SECONDS}s).")
 
+    # 4. Start durable n8n notification outbox background worker
+    outbox_task = asyncio.create_task(outbox_worker.start())
+    outbox_worker._task = outbox_task
+    logger.info("Durable notification outbox worker active.")
+
     yield
 
     # Shutdown
     logger.info("Shutting down Redcode Hospital Server...")
+    await outbox_worker.stop()
     await manager.stop_monitor()
 
 app = FastAPI(
     title="Redcode Hospital System",
     description="Hệ thống cảnh báo y tế khẩn cấp nội bộ bệnh viện",
-    version="1.0.0",
-    lifespan=lifespan
+    version="3.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json"
 )
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS if settings.ALLOWED_ORIGINS != ["*"] else ["*"],
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount local audio directory for static LAN access
-if not os.path.exists(settings.AUDIO_UPLOAD_DIR):
-    os.makedirs(settings.AUDIO_UPLOAD_DIR, exist_ok=True)
-app.mount("/assets/audio", StaticFiles(directory=settings.AUDIO_UPLOAD_DIR), name="audio")
+app.include_router(api_router, prefix="/api")
 
-# Mount API routers
-app.include_router(api_router)
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# WebSocket Realtime Gateway
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    client_type: str = Query("station", alias="type"),
-    station_code: str = Query(None),
-    token: str = Query(None)
+    type: Optional[str] = Query(None),
+    client_type: Optional[str] = Query(None),
+    station_code: Optional[str] = Query(None),
+    token: Optional[str] = Query(None)
 ):
     """
     Realtime WebSocket Gateway:
-    - client_type = 'station': Kiosk / Receiver PC station
-    - client_type = 'dashboard': Operator / Admin web monitoring
+    - type / client_type = 'station': Kiosk / Receiver PC station (authenticated by station token hash)
+    - type / client_type = 'dashboard': Operator / Admin web monitoring (strictly authenticated by JWT)
     """
-    if client_type == "station":
+    actual_type = type or client_type or "station"
+    if actual_type == "station":
         if not station_code or not token:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Station credentials required")
             return
@@ -137,6 +149,53 @@ async def websocket_endpoint(
                                 st = (await session.execute(
                                     select(Station.id).where(Station.station_code == station_code)
                                 )).scalar_one_or_none()
+
+                                # 1. Update alarm_station_states table
+                                if st:
+                                    if event_type in ["RECEIVED", "DISPLAYED"]:
+                                        await session.execute(
+                                            update(AlarmStationState)
+                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
+                                            .values(
+                                                state=StationAlarmStateEnum.DISPLAYED.value,
+                                                received_at=now,
+                                                displayed_at=now,
+                                                updated_at=now
+                                            )
+                                        )
+                                    elif event_type == "AUDIO_STARTED":
+                                        await session.execute(
+                                            update(AlarmStationState)
+                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
+                                            .values(
+                                                state=StationAlarmStateEnum.AUDIO_STARTED.value,
+                                                audio_started_at=now,
+                                                updated_at=now
+                                            )
+                                        )
+                                    elif event_type == "AUDIO_COMPLETED":
+                                        await session.execute(
+                                            update(AlarmStationState)
+                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
+                                            .values(
+                                                state=StationAlarmStateEnum.AUDIO_COMPLETED.value,
+                                                audio_completed_at=now,
+                                                updated_at=now
+                                            )
+                                        )
+                                    elif event_type == "AUDIO_FAILED":
+                                        await session.execute(
+                                            update(AlarmStationState)
+                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
+                                            .values(
+                                                state=StationAlarmStateEnum.FAILED.value,
+                                                failed_at=now,
+                                                error_message=str(metadata.get("error", "Audio playback error")),
+                                                updated_at=now
+                                            )
+                                        )
+
+                                # 2. Append audit trail event
                                 ev = AlarmEvent(
                                     alarm_id=alarm_id,
                                     station_id=st,
@@ -155,18 +214,37 @@ async def websocket_endpoint(
                     pass
 
         except WebSocketDisconnect:
-            await manager.disconnect_station(station_code)
+            await manager.disconnect_station(station_code, websocket)
         except Exception as e:
             logger.error(f"WebSocket station error ({station_code}): {e}")
-            await manager.disconnect_station(station_code)
+            await manager.disconnect_station(station_code, websocket)
 
-    elif client_type == "dashboard":
-        # Dashboard client connection
+    elif actual_type == "dashboard":
+        # Strictly authenticate dashboard token
+        if not token or not token.strip():
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Dashboard token required")
+            return
+
+        payload = decode_access_token(token)
+        if not payload or not payload.get("sub"):
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token")
+            return
+
+        username = payload.get("sub")
+        async with AsyncSessionLocal() as session:
+            stmt = select(User).where(User.username == username)
+            user = (await session.execute(stmt)).scalar_one_or_none()
+            if not user or not user.enabled or user.role not in [UserRole.ADMIN.value, UserRole.OPERATOR.value, UserRole.VIEWER.value]:
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorized or inactive user")
+                return
+
+        # Dashboard client authenticated successfully
         await manager.connect_dashboard(websocket)
         try:
             await websocket.send_text(json.dumps({
                 "type": "CONNECTION_ESTABLISHED",
                 "client_type": "dashboard",
+                "user": user.username,
                 "server_time": datetime.now(timezone.utc).isoformat()
             }))
 
@@ -186,4 +264,4 @@ async def websocket_endpoint(
             await manager.disconnect_dashboard(websocket)
 
     else:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unknown client type")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unsupported client type")

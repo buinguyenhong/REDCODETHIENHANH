@@ -56,7 +56,7 @@ export function WebSocketProvider({ children }) {
 
         // Sync missed/active alarms for this station on connect/reconnect
         if (stationConfig && stationConfig.station_code) {
-          api.getStationActiveAlarms(stationConfig.station_code)
+          api.getStationActiveAlarms(stationConfig.station_code, stationConfig.device_token)
             .then((alarms) => {
               if (alarms && alarms.length > 0) {
                 setActiveAlarms((prev) => {
@@ -178,6 +178,7 @@ export function WebSocketProvider({ children }) {
           currentAlarm.repeat_interval_ms || 1200,
           () => {
             // onStart: Send AUDIO_STARTED audit event
+            setAudioReady(true);
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
               wsRef.current.send(JSON.stringify({
                 type: 'STATION_EVENT',
@@ -195,6 +196,18 @@ export function WebSocketProvider({ children }) {
                 event_type: 'AUDIO_COMPLETED',
                 alarm_id: currentAlarm.alarm_id,
                 metadata: { station_code: stationConfig.station_code }
+              }));
+            }
+          },
+          (err) => {
+            // onError: Send AUDIO_FAILED audit event and update UI readiness
+            setAudioReady(false);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
+              wsRef.current.send(JSON.stringify({
+                type: 'STATION_EVENT',
+                event_type: 'AUDIO_FAILED',
+                alarm_id: currentAlarm.alarm_id,
+                metadata: { station_code: stationConfig.station_code, error: err?.message || 'Autoplay blocked' }
               }));
             }
           }

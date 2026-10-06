@@ -31,7 +31,11 @@ export default function ReceiverStationView() {
       alert('Vui lòng chọn trạm hợp lệ');
       return;
     }
-    const token = deviceToken.trim() || `station-token-${found.station_code.toLowerCase().replace('st-', '')}`;
+    const token = deviceToken.trim();
+    if (!token) {
+      alert('Vui lòng nhập Device Activation Token bảo mật do Quản trị viên cấp');
+      return;
+    }
     saveStationConfig({
       station_code: found.station_code,
       name: found.name,
@@ -138,7 +142,7 @@ export default function ReceiverStationView() {
                 type="text"
                 value={deviceToken}
                 onChange={(e) => setDeviceToken(e.target.value)}
-                placeholder="Ví dụ: station-token-cc-01"
+                placeholder="Nhập mã token bảo mật do Admin cấp khi khởi tạo trạm"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-slate-900 font-mono text-sm focus:border-red-500 focus:bg-white focus:outline-none"
               />
               <p className="text-xs text-slate-500 font-mono mt-1">

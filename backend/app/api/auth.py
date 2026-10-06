@@ -25,7 +25,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         # Audit log failed login
         fail_event = SystemEvent(
             station_id=None,
-            event_type="AUTH_FAILED",
+            event_type="LOGIN_FAILED",
             severity="WARNING",
             message=f"Failed login attempt for username: {req.username}",
             event_metadata={"username": req.username},
@@ -50,7 +50,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     # Audit log successful login
     success_event = SystemEvent(
         station_id=None,
-        event_type="AUTH_SUCCESS",
+        event_type="LOGIN_SUCCESS",
         severity="INFO",
         message=f"User {user.username} logged in successfully",
         event_metadata={"user_id": user.id, "username": user.username, "role": user.role},
