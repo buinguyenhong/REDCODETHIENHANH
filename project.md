@@ -1,9 +1,18 @@
-# REDCODE HOSPITAL — SYSTEM SPECIFICATION
+# REDCODE HOSPITAL — PROJECT REQUIREMENTS
 
-**Version:** 1.0  
-**Status:** Implementation baseline  
-**Target repository:** `buinguyenhong/redcodever2`  
-**Purpose:** This document is the source of truth for the coding agent implementing the production Redcode system.
+**Version:** 2.0 — consolidated 2026-10-06
+
+**Status:** Source of truth for requirements; implementation acceptance is tracked separately.
+
+**Target repository:** `buinguyenhong/REDCODETHIENHANH`
+**Purpose:** Đặc tả duy nhất của dự án. Hợp nhất baseline (hai file spec cũ có nội dung giống nhau), yêu cầu sửa lỗi sau review và các quyết định mới của người dùng. Lịch sử thực thi/bằng chứng kiểm thử nằm trong `agent_changelog.md`.
+
+## Cách sử dụng và thứ tự ưu tiên
+
+- Mục 45 quy định yêu cầu reliability bổ sung; mục 46 ghi các quyết định mới về role, xác nhận thiết bị và thời hạn alarm. Các mục này thay thế nội dung baseline nếu có xung đột.
+- README chỉ hướng dẫn sử dụng/chạy dự án, không tự thay đổi nghiệp vụ.
+- Agent phải đọc tài liệu này trước khi sửa, cập nhật `agent_changelog.md` sau mỗi đợt, ghi rõ FIXED/PARTIAL/BLOCKED và bằng chứng thực chạy.
+- Không đồng nhất yêu cầu với chức năng đã được nghiệm thu; test mock/build không thay thế kiểm thử mạng/browser/loa thực.
 
 ---
 
@@ -220,7 +229,8 @@ Roles tối thiểu:
 
 - `ADMIN`
 - `OPERATOR`
-- `VIEWER`
+
+Không tạo hoặc cho đăng nhập VIEWER. Tài khoản VIEWER cũ bị vô hiệu hóa, giữ lịch sử.
 
 ## 5.2 Quyền phát Redcode
 
@@ -251,7 +261,7 @@ Mỗi station có:
 - receiver_group
 - device token/activation token
 
-Sau khi cấu hình, station tự kết nối.
+Device credential là chi tiết kỹ thuật nội bộ. Admin đăng nhập trên máy nhận, chọn trạm và xác nhận thiết bị; hệ thống tự cấp/lưu credential. Không hiển thị form nhập/copy token thủ công. Sau khi xác nhận, station tự kết nối.
 
 ---
 
@@ -292,6 +302,7 @@ priority
 audio_sequence
 repeat_count
 repeat_interval_ms
+validity_seconds
 ```
 
 ---
@@ -344,6 +355,7 @@ Machine status phải thống nhất bằng enum.
 CREATED
 ACTIVE
 DISPLAY_COMPLETED
+EXPIRED
 CANCELLED
 ```
 
@@ -362,6 +374,10 @@ Các receiver đã hoàn tất trạng thái hiển thị hoặc người dùng 
 ### CANCELLED
 
 Chỉ dùng khi alarm được tạo nhầm và có quyền hủy.
+
+### EXPIRED
+
+Thời hạn phát cảnh báo đã hết; UI hiển thị **CẢNH BÁO ĐÃ PHÁT**. Hết hạn dừng visual/audio, không xóa lịch sử và không gửi n8n event kết thúc. Yêu cầu hiện tại dùng ACTIVE/EXPIRED/CANCELLED cho global status; presentation state theo từng trạm, không cần workflow hoàn thành sự cố.
 
 Không cần workflow "xử lý công việc" hoặc "hoàn thành sự cố".
 
@@ -773,6 +789,8 @@ Các event mới nhất.
 ---
 
 # 23. Reporting
+
+Reporting và xuất XLSX chỉ dành cho ADMIN. OPERATOR xem alarm log trên dashboard, không truy cập API/UI reports hoặc export.
 
 V1 chỉ cần:
 
@@ -1613,3 +1631,61 @@ Nếu phát hiện một yêu cầu chưa đủ rõ và có thể ảnh hưởng
 
 Đặc biệt, trước khi kết luận Android/browser audio đáp ứng yêu cầu unattended alarm, phải kiểm thử trên thiết bị thực tế.
 
+---
+
+# 45. Yêu cầu bổ sung sau code review
+
+Các yêu cầu sau hợp nhất yêu cầu thực thi sau review R01–R16. Thực hiện theo thứ tự A → B → C; trạng thái thực thi và bằng chứng nằm trong `agent_changelog.md`.
+
+## Batch A — Reliability blockers
+
+- **R01 — Schema:** migration bảo toàn dữ liệu, đồng bộ ORM/cột/default/nullable/FK/index; PostgreSQL sequence khởi tạo theo dữ liệu hiện có. Có đường adoption được kiểm chứng cho DB dev từng tạo bằng create_all. Production chạy Alembic trước Uvicorn, không dùng create_all thay migration; một API worker khi WebSocket manager còn in-memory. Nghiệm thu fresh migrate/startup/login/station/alarm/dismiss/report và upgrade giữ history trên database test riêng.
+- **R02/R10 — Atomic alarm và recovery:** alarm, immutable target snapshot, station states, CREATED audit và outbox cùng một transaction. Idempotency theo actor/request và payload fingerprint; cùng request trả một alarm, key khác payload trả conflict. Frontend giữ key khi retry uncertain request. DB-backed recovery sau crash giữa commit/broadcast và retry chưa ACK qua WebSocket; không thay realtime bằng client polling. ACK timestamps phản ánh hành động thực. Fault injection trước/sau commit và concurrent retries phải được kiểm chứng.
+- **R03/R06 — FIFO/audio:** server điều phối concurrent delivery; client dedup theo ID, sort server_sequence, không dùng client clock. Enqueue B/C không restart head A; cleanup/generation guard chặn callback cũ. Play rejection chỉ báo FAILED, không báo started/completed thành công. Test audio có resume/play awaited, kết quả trả server/admin, không ngắt alarm. Unlock retry đúng một lần. Readiness phân biệt UNKNOWN/NOT_READY/READY và khả năng browser play với xác nhận loa vật lý. Nghiệm thu browser ba alarm, sync/duplicate/stale events, repeat/interval, autoplay rejection.
+- **R04 — Cancel:** schema backend/frontend thống nhất, broadcast tới target và dashboard; cancel head dừng audio/tiến queue, cancel pending chỉ remove pending; reconnect reconcile cancelled. API idempotent, không tạo n8n cancel/end. Local dismiss không ảnh hưởng trạm khác.
+- **R05 — Heartbeat/restart:** timeout đóng đúng socket với identity guard; socket cũ không update connection mới. Startup reconcile persisted ONLINE; client ACK watchdog, capped reconnect và sync retry khi HTTP lỗi. Nghiệm thu half-open, socket A/B race và server restart.
+
+## Batch B — Configuration, audit và vận hành
+
+- **R07/R08 — Kiosk/auth:** boot/refresh bằng credential trạm nội bộ, không cần JWT user sau provisioning; station 401 hiển thị lỗi activation. Dọn socket/timer khi token/user/station đổi, xử lý revoke/expiry; phân biệt dashboard monitoring và receiver audio. Offline dismiss lưu pending action, retry idempotent, không replay alarm đã dismiss. Provisioning theo mục 46.
+- **R10/R12/R13/R16 — Permission/config:** backend là nguồn permission duy nhất, API effective permissions; Admin chỉnh quyền khoa/user theo mô hình được chốt, bật/tắt cấu hình, ordered audio sequence/repeat/interval, receiver membership và n8n integration. Omitted membership khác explicit empty; sửa tên group không xóa thành viên; target snapshot không đổi sau tạo. Soft-disable để giữ history, rotate/revoke/disable đóng socket cũ; audit cấu hình. Lifecycle theo mục 46, không bổ sung workflow xử lý sự cố.
+- **R09 — Outbox:** claim/lease/locked_at, reclaim abandoned PROCESSING, due-time filter trước limit, capped exponential backoff và attempt audit. At-least-once với stable event ID/idempotency cho n8n, không chặn core. Có backlog/failure monitoring và Admin retry khi hết retries; config/credential được quản trị và bảo vệ.
+- **R11/R14/R15 — State/security/health:** typed event allowlist, target authorization, transition/idempotency guards; ACK muộn không ghi đè DISMISSED/CANCELLED/EXPIRED. DISPLAYED chỉ lúc overlay head hiển thị. Connect/disconnect có station ID; structured errors/rollback, config before/after audit không chứa secret. Production fail-fast với PostgreSQL, DEMO_MODE=false, SECRET_KEY riêng ≥32 ký tự và origin allowlist cụ thể; seed idempotent, chỉ bootstrap Admin, không demo data. Validate enum/length/bounds/FK/color/null/local audio; upload filename server-generated, path containment, size/content validation. Credentials query không xuất hiện trong Nginx/Uvicorn logs. Health/readiness phản ánh DB/tasks/recovery; n8n degraded không làm core failed.
+- **R16 — Reports/deploy:** report chỉ ADMIN; ngày Asia/Ho_Chi_Minh quy đổi UTC, invalid/reversed range trả 4xx, UI timezone explicit. SQL aggregation/pagination theo ngày/tháng/type/khoa; per-station offline count/duration và average presentation/ACK khi có dữ liệu, không giả số thiếu. XLSX detail đầy đủ timestamps/error và chống spreadsheet formula. Image build frontend từ checkout sạch, external PostgreSQL network rõ ràng, healthchecks/restart/audio persistence. Backup/restore DB và audio phải kiểm chứng round trip; document single-worker constraint. Migration forward-only; rollback bằng backup đã kiểm chứng/image tương ứng, không tự drop bảng hoặc downgrade.
+
+## Batch C — UI và acceptance
+
+1. Clinical Control Interface: typography/phân cấp rõ, ít cards/shadows, không glass/blur trang trí/animation liên tục; alarm full-screen rõ loại/khoa/location/note/dismiss.
+2. Responsive nội dung dài và Android nhỏ; dismiss luôn tiếp cận được, timeout/loading/errors rõ.
+3. Meaningful regression cho queue/audio/activation/cancel/auth lifecycle; không chỉ mock assertions.
+4. Chạy 50+ rồi 100 WebSocket thật qua Nginx trên PostgreSQL: group-in/out, heartbeat, simultaneous alarms, slow client, reconnect/restart. Ghi latency p50/p95/max, lost/duplicate count; mục tiêu LAN bình thường dưới 1 giây.
+5. Kiểm thử n8n down/crash retry, DB/container restart, config/audio persistence, backup restore, credential log scan và acceptance 01–25.
+6. Kiểm thử PC/Android/loa thật: unattended boot/autoplay, mất mạng/refresh/reboot, volume/mute/sleep. Thiếu môi trường ghi BLOCKED và bước tái hiện; build/mock không thay bằng chứng thực.
+
+## Bàn giao
+
+Mỗi đợt cập nhật `agent_changelog.md`: finding R01–R16 với FIXED/PARTIAL/BLOCKED, file/migration thay đổi, commands/môi trường/pass/fail, ma trận acceptance 01–25, fresh deploy/upgrade/rollback/backup và giới hạn đã kiểm chứng. Không kết luận production-ready khi blockers hoặc acceptance thiết yếu chưa có bằng chứng.
+
+# 46. Quyết định nghiệp vụ hiện hành — 2026-10-06
+
+Mục này ưu tiên hơn mọi nội dung baseline hoặc yêu cầu review cũ có xung đột.
+
+## Vai trò và thiết bị nhận
+
+- Chỉ **ADMIN** và **OPERATOR** được tạo tài khoản/đăng nhập. VIEWER cũ bị vô hiệu hóa, giữ lịch sử; các mô tả Viewer trong baseline không còn áp dụng.
+- ADMIN quản trị cấu hình, xác nhận thiết bị và xem reports/XLSX. OPERATOR phát alarm theo quyền khoa và xem alarm log; không truy cập API/UI báo cáo/export.
+- Admin đăng nhập trên máy nhận, chọn trạm, xác nhận qua `POST /api/stations/{id}/confirm-device`. Server tự rotate credential, thu hồi kết nối cũ; browser tự lưu identity để boot/refresh. Không yêu cầu người dùng nhập/copy token thủ công; credential chỉ là chi tiết nội bộ.
+- Trạm đã xác nhận có **TEST LOA** local, **TEST HIỂN THỊ** overlay không tạo alarm, **TEST KẾT NỐI** WebSocket PING/PONG RTT timeout 5 giây. User khoa dùng được trên thiết bị đã xác nhận; khóa diagnostics khi có alarm thật.
+
+## Thời hạn alarm và đồng bộ
+
+- `alarm_types.validity_seconds`: mặc định **300 giây**, range **10–86400 giây**, quản trị theo loại alarm.
+- Mỗi alarm snapshot `expires_at` lúc tạo. Đổi cấu hình không thay thời hạn alarm đã phát.
+- Global status hiện hành: **ACTIVE / EXPIRED / CANCELLED**. EXPIRED hiển thị **CẢNH BÁO ĐÃ PHÁT**, không đồng nghĩa hủy/sự cố hoàn thành. Các status presentation trong baseline được theo dõi ở trạm, không dùng làm workflow toàn cục.
+- Hết hạn dừng visual/audio, lưu history/audit đúng một lần, không gửi n8n end/expiry. Cancel vẫn riêng và không gửi n8n cancellation.
+- Trạm thuộc target snapshot nhưng offline/đăng nhập sau đồng bộ alarm **còn hiệu lực**, kèm cấu hình audio/expiry, theo FIFO. Alarm hết hạn/cancel hoặc đã local dismiss không được phát lại.
+- Migration hiện hành `20261006_validity` bổ sung validity/expiry và vô hiệu hóa VIEWER; giữ dữ liệu/history.
+
+## Phần chưa nghiệm thu
+
+Test API SQLite, unit audio và build không đóng acceptance mạng/loa. Các mục còn PARTIAL/BLOCKED gồm PostgreSQL fresh/upgrade/adoption, Docker/Nginx/restart/restore, concurrent browser FIFO/reconnect, outbox multi-worker/admin controls, cấu hình/audit/report còn thiếu và PC/Android unattended audio. Ma trận chi tiết được duy trì trong `agent_changelog.md`.
