@@ -342,7 +342,7 @@ async def test_concurrency_idempotency_unique_enforcement():
                 "alarm_type_id": 4,
                 "source_location": "ICU Room",
                 "idempotency_key": shared_key,
-                "note": f"Idempotency retry {idx}"
+                "note": "Idempotency retry"
             })
 
     tasks = [send_duplicate(i) for i in range(20)]

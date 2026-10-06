@@ -73,7 +73,6 @@ async def delete_department(
     dept = await db.get(Department, dept_id)
     if not dept:
         raise HTTPException(status_code=404, detail="Không tìm thấy khoa/phòng")
-    await db.delete(dept)
+    dept.enabled = False
     await db.commit()
     return {"message": "Đã xóa khoa/phòng thành công"}
-

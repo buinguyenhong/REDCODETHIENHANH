@@ -1,10 +1,12 @@
 import { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { soundPlayer } from '../utils/soundPlayer';
 import { api } from '../api/client';
+import { useAuth } from './AuthContext';
 
 const WebSocketContext = createContext(null);
 
 export function WebSocketProvider({ children }) {
+  const { token } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
   const [activeAlarms, setActiveAlarms] = useState([]); // FIFO queue of active alarms
   const [audioReady, setAudioReady] = useState(false);
@@ -21,6 +23,11 @@ export function WebSocketProvider({ children }) {
   const reconnectTimeoutRef = useRef(null);
   const heartbeatIntervalRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
+  const disposedRef = useRef(false);
+  const lastHeartbeatAckRef = useRef(Date.now());
+  const [audioRetry, setAudioRetry] = useState(0);
+  const dismissedRef = useRef(new Set(JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]').map(item => item.alarm_id)));
+  const ordered = (alarms) => [...new Map(alarms.filter(a => !dismissedRef.current.has(a.alarm_id)).map(a => [a.alarm_id, a])).values()].sort((a,b) => a.server_sequence - b.server_sequence);
 
   const saveStationConfig = (config) => {
     setStationConfig(config);
@@ -31,7 +38,27 @@ export function WebSocketProvider({ children }) {
     }
   };
 
+  const synchronize = async () => {
+    if (!stationConfig?.device_token) return;
+    const socket = wsRef.current;
+    const startedAt = Date.now();
+    const pending = JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]');
+    const remaining = [];
+    for (const item of pending) {
+      try { await api.dismissStationAlarm(item); } catch (_) { remaining.push(item); }
+    }
+    localStorage.setItem('redcode_pending_dismiss', JSON.stringify(remaining));
+    const alarms = await api.getStationActiveAlarms(stationConfig.station_code, stationConfig.device_token);
+    if (disposedRef.current || wsRef.current !== socket) return;
+    const ids = new Set(alarms.map(a => a.alarm_id));
+    setActiveAlarms(prev => ordered([...prev.filter(a => ids.has(a.alarm_id) || a.localReceivedAt >= startedAt), ...alarms]));
+    for (const alarm of alarms) {
+      if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'RECEIVED', alarm_id: alarm.alarm_id }));
+    }
+  };
+
   const connect = useCallback(() => {
+    if (disposedRef.current || (!stationConfig?.device_token && !token)) return;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -50,29 +77,22 @@ export function WebSocketProvider({ children }) {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (disposedRef.current || wsRef.current !== ws) { ws.close(); return; }
+        lastHeartbeatAckRef.current = Date.now();
         setIsConnected(true);
         reconnectAttemptsRef.current = 0;
         console.log('[WebSocket] Kết nối thành công tới máy chủ Redcode');
 
         // Sync missed/active alarms for this station on connect/reconnect
         if (stationConfig && stationConfig.station_code) {
-          api.getStationActiveAlarms(stationConfig.station_code, stationConfig.device_token)
-            .then((alarms) => {
-              if (alarms && alarms.length > 0) {
-                setActiveAlarms((prev) => {
-                  const existingIds = new Set(prev.map((a) => a.alarm_id));
-                  const newAlarms = alarms.filter((a) => !existingIds.has(a.alarm_id));
-                  return [...prev, ...newAlarms];
-                });
-              }
-            })
-            .catch((err) => console.warn('Lỗi đồng bộ báo động chủ động:', err));
+          synchronize().catch((err) => console.warn('Lỗi đồng bộ:', err));
         }
 
         // Start heartbeat every 5 seconds
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
+            if (Date.now() - lastHeartbeatAckRef.current > 20000) { ws.close(); return; }
             ws.send(JSON.stringify({
               type: 'HEARTBEAT',
               audio_ready: soundPlayer.isAudioReady,
@@ -92,6 +112,7 @@ export function WebSocketProvider({ children }) {
       };
 
       ws.onclose = () => {
+        if (disposedRef.current || wsRef.current !== ws) return;
         setIsConnected(false);
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         scheduleReconnect();
@@ -105,9 +126,10 @@ export function WebSocketProvider({ children }) {
       console.error('[WebSocket] Lỗi khởi tạo socket:', err);
       scheduleReconnect();
     }
-  }, [stationConfig]);
+  }, [stationConfig, token]);
 
   const scheduleReconnect = () => {
+    if (disposedRef.current) return;
     if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
     const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), 10000);
     reconnectAttemptsRef.current++;
@@ -120,12 +142,14 @@ export function WebSocketProvider({ children }) {
   const handleIncomingMessage = (msg) => {
     switch (msg.type) {
       case 'ALARM_EVENT':
+        if (!stationConfig?.station_code) break;
         if (msg.event === 'ALARM_TRIGGERED' && msg.data) {
           const alarm = msg.data;
+          alarm.localReceivedAt = Date.now();
           setActiveAlarms((prev) => {
             // Avoid duplicate alarm in queue
             if (prev.some((a) => a.alarm_id === alarm.alarm_id)) return prev;
-            return [...prev, alarm]; // Enqueue in FIFO order
+            return ordered([...prev, alarm]);
           });
 
           // Send RECEIVED audit event back to server
@@ -142,13 +166,20 @@ export function WebSocketProvider({ children }) {
 
       case 'ALARM_CANCELLED':
         if (msg.alarm_id) {
+          dismissedRef.current.add(msg.alarm_id);
           setActiveAlarms((prev) => prev.filter((a) => a.alarm_id !== msg.alarm_id));
         }
         break;
 
       case 'AUDIO_TEST':
         console.log('[WebSocket] Nhận lệnh kiểm tra âm thanh từ Admin');
-        soundPlayer.playTestTone();
+        soundPlayer.playTestTone().then(() => setAudioReady(true)).catch(() => setAudioReady(false));
+        break;
+      case 'SYNC_REQUIRED':
+        synchronize().catch((err) => console.warn('Lỗi đồng bộ:', err));
+        break;
+      case 'HEARTBEAT_ACK':
+        lastHeartbeatAckRef.current = Date.now();
         break;
 
       case 'STATION_STATUS':
@@ -171,6 +202,7 @@ export function WebSocketProvider({ children }) {
   useEffect(() => {
     if (activeAlarms.length > 0) {
       const currentAlarm = activeAlarms[0];
+      if (wsRef.current?.readyState === WebSocket.OPEN && stationConfig?.station_code) wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'DISPLAYED', alarm_id: currentAlarm.alarm_id }));
       if (currentAlarm.audio_sequence && currentAlarm.audio_sequence.length > 0) {
         soundPlayer.playAlarmSequence(
           currentAlarm.audio_sequence,
@@ -216,7 +248,8 @@ export function WebSocketProvider({ children }) {
     } else {
       soundPlayer.stop();
     }
-  }, [activeAlarms, stationConfig]);
+    return () => soundPlayer.stop();
+  }, [activeAlarms[0]?.alarm_id, stationConfig, audioRetry]);
 
   // Local Dismiss of current alarm
   const dismissCurrentAlarm = async (note = '') => {
@@ -224,19 +257,20 @@ export function WebSocketProvider({ children }) {
     const currentAlarm = activeAlarms[0];
 
     soundPlayer.stop();
+    dismissedRef.current.add(currentAlarm.alarm_id);
 
     // Remove from local queue immediately
     setActiveAlarms((prev) => prev.slice(1));
 
     // Send local dismissal to backend
     if (stationConfig && stationConfig.station_code) {
+      const action = { alarm_id: currentAlarm.alarm_id, station_code: stationConfig.station_code, device_token: stationConfig.device_token, note };
+      const pending = JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]');
+      localStorage.setItem('redcode_pending_dismiss', JSON.stringify([...pending, action]));
       try {
-        await api.dismissStationAlarm({
-          alarm_id: currentAlarm.alarm_id,
-          station_code: stationConfig.station_code,
-          device_token: stationConfig.device_token,
-          note,
-        });
+        await api.dismissStationAlarm(action);
+        const latest = JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]');
+        localStorage.setItem('redcode_pending_dismiss', JSON.stringify(latest.filter(item => item.alarm_id !== action.alarm_id)));
       } catch (err) {
         console.warn('Gửi xác nhận tắt báo động lỗi:', err);
       }
@@ -246,6 +280,7 @@ export function WebSocketProvider({ children }) {
   const unlockAudio = async () => {
     const success = await soundPlayer.unlockAudio();
     setAudioReady(success);
+    if (success) setAudioRetry(value => value + 1);
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'AUDIO_STATE_CHANGED',
@@ -256,8 +291,11 @@ export function WebSocketProvider({ children }) {
   };
 
   useEffect(() => {
+    disposedRef.current = false;
     connect();
     return () => {
+      disposedRef.current = true;
+      if (wsRef.current) wsRef.current.onclose = null;
       if (wsRef.current) wsRef.current.close();
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
@@ -271,7 +309,7 @@ export function WebSocketProvider({ children }) {
         activeAlarms,
         currentAlarm: activeAlarms[0] || null,
         dismissCurrentAlarm,
-        audioReady: soundPlayer.isAudioReady,
+        audioReady,
         unlockAudio,
         stationConfig,
         saveStationConfig,

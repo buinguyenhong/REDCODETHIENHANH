@@ -1,5 +1,7 @@
 import os
 import shutil
+import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
@@ -32,11 +34,17 @@ async def upload_audio_file(
         raise HTTPException(status_code=400, detail="Mã file âm thanh đã tồn tại")
 
     os.makedirs(settings.AUDIO_UPLOAD_DIR, exist_ok=True)
-    filename = f"{code}_{file.filename}"
+    extension = Path(file.filename or '').suffix.lower()
+    if extension not in {'.wav', '.mp3', '.ogg'}:
+        raise HTTPException(status_code=422, detail='Chỉ chấp nhận WAV, MP3, OGG')
+    contents = await file.read(20 * 1024 * 1024 + 1)
+    if len(contents) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail='File vượt giới hạn 20 MB')
+    filename = f"{uuid.uuid4().hex}{extension}"
     file_path = os.path.join(settings.AUDIO_UPLOAD_DIR, filename)
 
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(contents)
 
     # Relative web path
     web_path = f"/assets/audio/{filename}"

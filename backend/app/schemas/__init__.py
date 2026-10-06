@@ -1,6 +1,6 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # --- Auth ---
 class LoginRequest(BaseModel):
@@ -36,7 +36,7 @@ class UserBase(BaseModel):
     username: str
     display_name: str
     department_id: Optional[int] = None
-    role: str = "OPERATOR"
+    role: Literal['ADMIN', 'OPERATOR', 'VIEWER'] = "OPERATOR"
     enabled: bool = True
 
 class UserCreate(UserBase):
@@ -45,7 +45,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     display_name: Optional[str] = None
     department_id: Optional[int] = None
-    role: Optional[str] = None
+    role: Optional[Literal['ADMIN', 'OPERATOR', 'VIEWER']] = None
     enabled: Optional[bool] = None
     password: Optional[str] = None
 
@@ -64,6 +64,7 @@ class StationRegister(BaseModel):
     location: str = ""
     device_token: Optional[str] = None # Generated securely by server if omitted
     receiver_group_ids: Optional[List[int]] = None
+    enabled: bool = True
 
 class StationHeartbeat(BaseModel):
     station_code: str
@@ -129,8 +130,15 @@ class AlarmTypeBase(BaseModel):
     receiver_group_id: Optional[int] = None
     audio_sequence: Optional[List[str]] = []
     allowed_department_ids: Optional[List[int]] = []
-    repeat_count: int = 3
-    repeat_interval_ms: int = 1500
+    repeat_count: int = Field(default=3, ge=1, le=100)
+    repeat_interval_ms: int = Field(default=1500, ge=0, le=600000)
+
+    @field_validator('audio_sequence')
+    @classmethod
+    def local_audio(cls, value):
+        if value and any(not path.startswith('/assets/audio/') or '..' in path or '?' in path for path in value):
+            raise ValueError('Audio sequence must use local /assets/audio/ paths')
+        return value
 
 class AlarmTypeCreate(AlarmTypeBase):
     pass
@@ -144,8 +152,9 @@ class AlarmTypeUpdate(BaseModel):
     receiver_group_id: Optional[int] = None
     audio_sequence: Optional[List[str]] = None
     allowed_department_ids: Optional[List[int]] = None
-    repeat_count: Optional[int] = None
-    repeat_interval_ms: Optional[int] = None
+    repeat_count: Optional[int] = Field(default=None, ge=1, le=100)
+    repeat_interval_ms: Optional[int] = Field(default=None, ge=0, le=600000)
+    _local_audio = field_validator('audio_sequence')(AlarmTypeBase.local_audio.__func__)
 
 class AlarmTypeOut(AlarmTypeBase):
     id: int

@@ -52,6 +52,7 @@ export default function AdminDashboard() {
     audio_file_path: '',
     repeat_count: 4,
     repeat_interval_ms: 1200,
+    allowed_department_ids: [],
   });
 
   const [stationForm, setStationForm] = useState({
@@ -168,9 +169,10 @@ export default function AdminDashboard() {
         priority: item.priority || 1,
         display_color: item.display_color || '#dc2626',
         receiver_group_id: item.receiver_group?.id || item.receiver_group_id || '',
-        audio_file_path: (item.audio_sequence && item.audio_sequence[0]) || '',
+        audio_file_path: (item.audio_sequence || []).join('\n'),
         repeat_count: item.repeat_count || 4,
         repeat_interval_ms: item.repeat_interval_ms || 1200,
+        allowed_department_ids: item.allowed_department_ids || [],
       });
     } else {
       setAlarmTypeForm({
@@ -183,6 +185,7 @@ export default function AdminDashboard() {
         audio_file_path: audioFiles[0]?.file_path || '',
         repeat_count: 4,
         repeat_interval_ms: 1200,
+        allowed_department_ids: [],
       });
     }
     setModalType('alarmType');
@@ -198,10 +201,11 @@ export default function AdminDashboard() {
         priority: parseInt(alarmTypeForm.priority, 10),
         display_color: alarmTypeForm.display_color,
         receiver_group_id: alarmTypeForm.receiver_group_id ? parseInt(alarmTypeForm.receiver_group_id, 10) : null,
-        audio_sequence: alarmTypeForm.audio_file_path ? [alarmTypeForm.audio_file_path] : [],
+        audio_sequence: alarmTypeForm.audio_file_path.split('\n').map(path => path.trim()).filter(Boolean),
         repeat_count: parseInt(alarmTypeForm.repeat_count, 10),
         repeat_interval_ms: parseInt(alarmTypeForm.repeat_interval_ms, 10),
         enabled: true,
+        allowed_department_ids: alarmTypeForm.allowed_department_ids,
       };
 
       if (editItem) {
@@ -409,7 +413,7 @@ export default function AdminDashboard() {
         code: item.code,
         name: item.name,
         description: item.description || '',
-        station_ids: [],
+        station_ids: undefined,
       });
     } else {
       setGroupForm({
@@ -429,7 +433,7 @@ export default function AdminDashboard() {
         code: groupForm.code.trim().toUpperCase(),
         name: groupForm.name.trim(),
         description: groupForm.description.trim(),
-        station_ids: groupForm.station_ids.map((id) => parseInt(id, 10)),
+        station_ids: groupForm.station_ids?.map((id) => parseInt(id, 10)),
         enabled: true,
       };
 
@@ -1126,6 +1130,11 @@ export default function AdminDashboard() {
             </div>
 
             <form onSubmit={saveAlarmType} className="space-y-4 text-xs font-mono">
+              <label className="block">Chuỗi audio theo thứ tự (mỗi dòng một đường dẫn local)<textarea rows={4} className="w-full border p-2" value={alarmTypeForm.audio_file_path} onChange={event => setAlarmTypeForm({...alarmTypeForm, audio_file_path: event.target.value})} /></label>
+              <fieldset className="border border-slate-300 p-3">
+                <legend>Khoa/phòng được phép phát</legend>
+                {departments.map(dept => <label key={dept.id} className="block py-1"><input type="checkbox" checked={alarmTypeForm.allowed_department_ids?.includes(dept.id) || false} onChange={event => setAlarmTypeForm({...alarmTypeForm, allowed_department_ids: event.target.checked ? [...(alarmTypeForm.allowed_department_ids || []), dept.id] : alarmTypeForm.allowed_department_ids.filter(id => id !== dept.id)})} /> {dept.name}</label>)}
+              </fieldset>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-600 font-bold uppercase mb-1">Mã Code (Định danh):</label>

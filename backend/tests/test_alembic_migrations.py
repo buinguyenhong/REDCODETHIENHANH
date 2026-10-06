@@ -27,11 +27,20 @@ def test_alembic_upgrade_downgrade_cycle():
         # 1. Clean DB upgrade head
         command.upgrade(alembic_cfg, "head")
 
-        # 2. Downgrade to base
-        command.downgrade(alembic_cfg, "base")
-
-        # 3. Upgrade to head again
+        # Alignment is intentionally forward-only. Verify idempotent upgrade and
+        # every ORM-mapped column on a database created exclusively by Alembic.
         command.upgrade(alembic_cfg, "head")
+        from sqlalchemy import create_engine, inspect
+        from app.database import Base
+        import app.models
+        migrated = create_engine(f'sqlite:///{tmp_db_path}')
+        try:
+            inspector = inspect(migrated)
+            for table in Base.metadata.sorted_tables:
+                actual = {c['name'] for c in inspector.get_columns(table.name)}
+                assert set(table.columns.keys()) <= actual, table.name
+        finally:
+            migrated.dispose()
 
     finally:
         if os.path.exists(tmp_db_path):

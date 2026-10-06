@@ -20,4 +20,4 @@ RUN mkdir -p /app/static/audio
 EXPOSE 8000
 
 # Run uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log"]

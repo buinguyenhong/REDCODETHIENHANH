@@ -31,7 +31,9 @@ async def get_health(db: AsyncSession = Depends(get_db)):
 
     # Count stations
     total_stations_stmt = select(func.count(Station.id))
-    total_stations = (await db.execute(total_stations_stmt)).scalar() or 0
+    total_stations = 0
+    if db_status == 'ok':
+        total_stations = (await db.execute(total_stations_stmt)).scalar() or 0
     active_stations = len(manager.active_stations)
 
     overall_status = "ok" if db_status == "ok" else "error"

@@ -1,6 +1,6 @@
 from typing import List, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
 
     AUDIO_UPLOAD_DIR: str = "static/audio"
+
+    @model_validator(mode='after')
+    def production_configuration(self):
+        if self.ENVIRONMENT == 'production':
+            if self.DEMO_MODE or not self.DATABASE_URL.startswith('postgresql'):
+                raise ValueError('Production requires PostgreSQL and DEMO_MODE=false')
+            if len(self.SECRET_KEY) < 32 or self.SECRET_KEY.startswith(('redcode-secret', 'change-this')):
+                raise ValueError('Production requires a unique SECRET_KEY of at least 32 characters')
+            if '*' in self.ALLOWED_ORIGINS:
+                raise ValueError('Production requires an explicit origin allowlist')
+        return self
 
     @field_validator("ALLOWED_ORIGINS")
     @classmethod

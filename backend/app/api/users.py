@@ -95,7 +95,6 @@ async def delete_user(
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
-    await db.delete(user)
+    user.enabled = False
     await db.commit()
     return {"message": "Đã xóa người dùng thành công"}
-

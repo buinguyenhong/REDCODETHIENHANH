@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from zoneinfo import ZoneInfo
 from app.database import get_db
 from app.models import Alarm, AlarmType, Department, Station, SystemEvent, User, AlarmStationState
 from app.api.deps import get_current_user
@@ -23,22 +24,30 @@ def parse_date_range(from_date_str: Optional[str], to_date_str: Optional[str]) -
     end_dt = None
     if from_date_str and from_date_str.strip():
         clean_str = from_date_str.strip()
-        dt = datetime.fromisoformat(clean_str)
+        try:
+            dt = datetime.fromisoformat(clean_str)
+        except ValueError:
+            raise HTTPException(status_code=422, detail='Ngày không hợp lệ')
         if len(clean_str) <= 10:
-            dt = dt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+            dt = dt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')).astimezone(timezone.utc)
         elif dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         start_dt = dt
 
     if to_date_str and to_date_str.strip():
         clean_str = to_date_str.strip()
-        dt = datetime.fromisoformat(clean_str)
+        try:
+            dt = datetime.fromisoformat(clean_str)
+        except ValueError:
+            raise HTTPException(status_code=422, detail='Ngày không hợp lệ')
         if len(clean_str) <= 10:
-            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')).astimezone(timezone.utc)
         elif dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         end_dt = dt
 
+    if start_dt and end_dt and start_dt > end_dt:
+        raise HTTPException(status_code=422, detail='Khoảng ngày không hợp lệ')
     return start_dt, end_dt
 
 @router.get("/summary")
@@ -65,8 +74,13 @@ async def get_summary_report(
     by_type: Dict[str, int] = {}
     by_dept: Dict[str, int] = {}
     by_status: Dict[str, int] = {}
+    by_day, by_month = {}, {}
 
     for a in alarms:
+        local = a.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')) if a.created_at.tzinfo is None else a.created_at.astimezone(ZoneInfo('Asia/Ho_Chi_Minh'))
+        day, month = local.strftime('%Y-%m-%d'), local.strftime('%Y-%m')
+        by_day[day] = by_day.get(day, 0) + 1
+        by_month[month] = by_month.get(month, 0) + 1
         t_name = a.alarm_type.name if a.alarm_type else "Không xác định"
         d_name = a.source_department.name if a.source_department else "Không xác định"
         by_type[t_name] = by_type.get(t_name, 0) + 1
@@ -84,6 +98,8 @@ async def get_summary_report(
 
     return {
         "total_alarms": total_alarms,
+        "by_day": by_day,
+        "by_month": by_month,
         "by_type": by_type,
         "by_department": by_dept,
         "by_status": by_status,
@@ -119,6 +135,16 @@ async def export_alarms_xlsx(
     wb = Workbook()
     ws = wb.active
     ws.title = "BaoCao_Redcode"
+    details = wb.create_sheet('TrangThai_Tram')
+    details.append(['Alarm ID', 'Trạm', 'State', 'Received', 'Displayed', 'Audio started', 'Audio completed', 'Dismissed', 'Failed', 'Error'])
+    def safe(value):
+        return "'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value
+    def formatted(value):
+        if not value:
+            return ''
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).isoformat()
 
     # Styling definitions
     header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
@@ -147,7 +173,7 @@ async def export_alarms_xlsx(
     ws.row_dimensions[1].height = 26
 
     for idx, a in enumerate(alarms, 1):
-        created_str = a.created_at.strftime("%d/%m/%Y %H:%M:%S") if a.created_at else ""
+        created_str = formatted(a.created_at)
         t_code = a.alarm_type.code if a.alarm_type else ""
         t_name = a.alarm_type.name if a.alarm_type else ""
         dept_name = a.source_department.name if a.source_department else ""
@@ -158,6 +184,7 @@ async def export_alarms_xlsx(
         if a.station_states:
             for st in a.station_states:
                 st_code = st.station.station_code if st.station else f"ID-{st.station_id}"
+                details.append([safe(v) for v in [a.id, st_code, st.state, formatted(st.received_at), formatted(st.displayed_at), formatted(st.audio_started_at), formatted(st.audio_completed_at), formatted(st.dismissed_at), formatted(st.failed_at), st.error_message]])
                 st_text = f"{st_code}: {st.state}"
                 if st.dismissed_at:
                     st_text += f" (Dismiss: {st.dismissed_at.strftime('%H:%M:%S')})"
@@ -177,7 +204,7 @@ async def export_alarms_xlsx(
             a.server_sequence,
             stations_str
         ]
-        ws.append(row_data)
+        ws.append([safe(v) for v in row_data])
 
         row_num = idx + 1
         ws.row_dimensions[row_num].height = 20

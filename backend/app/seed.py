@@ -43,6 +43,12 @@ async def seed_database():
             return
 
         is_production = (settings.ENVIRONMENT == "production") and not settings.DEMO_MODE
+        if is_production:
+            if not settings.INITIAL_ADMIN_PASSWORD.strip():
+                raise RuntimeError('Fresh production installation requires INITIAL_ADMIN_PASSWORD')
+            session.add(User(username='admin', password_hash=hash_password(settings.INITIAL_ADMIN_PASSWORD), display_name='Quản trị hệ thống', role=UserRole.ADMIN.value, enabled=True))
+            await session.commit()
+            return
         logger.info(f"Seeding hospital data (Mode: {'PRODUCTION' if is_production else 'DEMO/DEV'})...")
 
         # 1. Departments

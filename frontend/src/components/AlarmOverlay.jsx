@@ -11,7 +11,7 @@ export default function AlarmOverlay() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col justify-between p-6 md:p-12 text-white select-none animate-alarm-flash"
+      className="fixed inset-0 z-50 flex flex-col justify-between overflow-y-auto p-4 md:p-12 text-white select-none"
       style={{ backgroundColor: bgColor }}
     >
       {/* Top Banner: Audio Status & Queue indicator */}
@@ -57,7 +57,7 @@ export default function AlarmOverlay() {
           {currentAlarm.name}
         </div>
 
-        <div className="w-full bg-black/60 backdrop-blur-md rounded-2xl p-6 md:p-8 border-2 border-white/20 shadow-2xl space-y-4 text-left">
+        <div className="w-full bg-black/40 p-4 md:p-8 border-2 border-white/20 space-y-4 text-left">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="flex items-start space-x-3">
               <MapPin className="w-6 h-6 text-yellow-300 shrink-0 mt-1" />

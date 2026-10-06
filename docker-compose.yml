@@ -33,7 +33,6 @@ services:
       - "80:80"
     volumes:
       # Mount built frontend assets
-      - ./frontend/dist:/usr/share/nginx/html:ro
       # Mount persisted audio assets for direct streaming
       - redcode_audio:/var/www/assets/audio:ro
     depends_on:

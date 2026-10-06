@@ -17,9 +17,10 @@ export async function apiRequest(endpoint, options = {}) {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
+    signal: options.signal || AbortSignal.timeout(15000),
   });
 
-  if (response.status === 401 && !endpoint.includes('/auth/login')) {
+  if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.startsWith('/stations')) {
     localStorage.removeItem('redcode_token');
     localStorage.removeItem('redcode_user');
     window.location.href = '/login';
@@ -68,6 +69,7 @@ export const api = {
     apiRequest(`/users/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
   // Stations
+  activateStation: (data) => apiRequest('/stations/activate', { method: 'POST', body: JSON.stringify(data) }),
   getStations: (statusFilter) =>
     apiRequest(`/stations${statusFilter ? `?status_filter=${statusFilter}` : ''}`),
   getStation: (id) => apiRequest(`/stations/${id}`),
@@ -87,6 +89,7 @@ export const api = {
   // Alarm Types
   getAlarmTypes: (enabledOnly = false) =>
     apiRequest(`/alarm-types${enabledOnly ? '?enabled_only=true' : ''}`),
+  getPermittedAlarmTypes: () => apiRequest('/alarm-types?enabled_only=true&permitted_only=true'),
   createAlarmType: (data) =>
     apiRequest('/alarm-types', { method: 'POST', body: JSON.stringify(data) }),
   updateAlarmType: (id, data) =>
@@ -152,4 +155,3 @@ export const api = {
   getHealthDb: () => apiRequest('/health/db'),
   getHealthWebsocket: () => apiRequest('/health/websocket'),
 };
-

@@ -14,14 +14,25 @@ router = APIRouter(prefix="/alarm-types", tags=["Alarm Types"])
 @router.get("", response_model=List[AlarmTypeOut])
 async def list_alarm_types(
     enabled_only: bool = False,
+    permitted_only: bool = False,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group))
+    stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group), selectinload(AlarmType.department_permissions))
+    if permitted_only and current_user.role != 'ADMIN':
+        if current_user.role == 'VIEWER':
+            return []
+        stmt = stmt.join(DepartmentAlarmPermission).where(DepartmentAlarmPermission.department_id == current_user.department_id, DepartmentAlarmPermission.enabled == True)
     if enabled_only:
         stmt = stmt.where(AlarmType.enabled == True)
     stmt = stmt.order_by(AlarmType.priority.asc(), AlarmType.id.asc())
     res = await db.execute(stmt)
-    return [AlarmTypeOut.model_validate(at) for at in res.scalars().all()]
+    result = []
+    for alarm_type in res.scalars().all():
+        output = AlarmTypeOut.model_validate(alarm_type)
+        output.allowed_department_ids = [permission.department_id for permission in alarm_type.department_permissions if permission.enabled]
+        result.append(output)
+    return result
 
 @router.post("", response_model=AlarmTypeOut, status_code=status.HTTP_201_CREATED)
 async def create_alarm_type(
@@ -56,12 +67,14 @@ async def create_alarm_type(
     await db.refresh(alarm_type)
 
     # Synchronize department_alarm_permissions relational records
-    if type_in.allowed_department_ids:
-        for d_id in type_in.allowed_department_ids:
+    from app.models import Department
+    department_ids = (await db.execute(select(Department.id))).scalars().all()
+    if department_ids:
+        for d_id in department_ids:
             db.add(DepartmentAlarmPermission(
                 department_id=d_id,
                 alarm_type_id=alarm_type.id,
-                enabled=True
+                enabled=d_id in (type_in.allowed_department_ids or [])
             ))
         await db.commit()
 
@@ -93,11 +106,13 @@ async def update_alarm_type(
                 DepartmentAlarmPermission.alarm_type_id == alarm_type.id
             )
         )
-        for d_id in type_in.allowed_department_ids:
+        from app.models import Department
+        department_ids = (await db.execute(select(Department.id))).scalars().all()
+        for d_id in department_ids:
             db.add(DepartmentAlarmPermission(
                 department_id=d_id,
                 alarm_type_id=alarm_type.id,
-                enabled=True
+                enabled=d_id in type_in.allowed_department_ids
             ))
         await db.commit()
 
@@ -124,6 +139,6 @@ async def delete_alarm_type(
     alarm_type = await db.get(AlarmType, type_id)
     if not alarm_type:
         raise HTTPException(status_code=404, detail="Không tìm thấy loại báo động")
-    await db.delete(alarm_type)
+    alarm_type.enabled = False
     await db.commit()
     return {"message": "Đã xóa loại báo động"}

@@ -13,7 +13,7 @@ export default function ReceiverStationView() {
   const [testResult, setTestResult] = useState(null);
 
   useEffect(() => {
-    loadStations();
+    if (localStorage.getItem('redcode_token')) loadStations();
   }, []);
 
   const loadStations = async () => {
@@ -25,17 +25,15 @@ export default function ReceiverStationView() {
     }
   };
 
-  const handleSaveConfig = () => {
-    const found = stationsList.find((s) => s.station_code === selectedStationCode);
-    if (!found) {
-      alert('Vui lòng chọn trạm hợp lệ');
-      return;
-    }
+  const handleSaveConfig = async () => {
     const token = deviceToken.trim();
     if (!token) {
       alert('Vui lòng nhập Device Activation Token bảo mật do Quản trị viên cấp');
       return;
     }
+    let found;
+    try { found = await api.activateStation({ station_code: selectedStationCode, device_token: token }); }
+    catch (error) { alert(error.message); return; }
     saveStationConfig({
       station_code: found.station_code,
       name: found.name,
@@ -120,18 +118,18 @@ export default function ReceiverStationView() {
               <label className="block text-xs font-mono font-bold uppercase text-slate-600 mb-2">
                 Chọn trạm cố định trong hệ thống:
               </label>
-              <select
+              <input list="station-options"
                 value={selectedStationCode}
                 onChange={(e) => setSelectedStationCode(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-slate-900 font-mono text-sm focus:border-red-500 focus:bg-white focus:outline-none"
-              >
-                <option value="">-- Chọn trạm --</option>
+              />
+              <datalist id="station-options">
                 {stationsList.map((s) => (
                   <option key={s.id} value={s.station_code}>
                     {s.station_code} — {s.name} ({s.department?.name || 'Toàn viện'})
                   </option>
                 ))}
-              </select>
+              </datalist>
             </div>
 
             <div>

@@ -88,7 +88,6 @@ async def delete_receiver_group(
     group = await db.get(ReceiverGroup, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Không tìm thấy nhóm nhận")
-    await db.delete(group)
+    group.enabled = False
     await db.commit()
     return {"message": "Đã xóa nhóm nhận thành công"}
-

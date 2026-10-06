@@ -5,6 +5,7 @@ class SoundPlayer {
     this.isPlaying = false;
     this.isAudioReady = false;
     this.repeatTimer = null;
+    this.generation = 0;
   }
 
   init() {
@@ -33,8 +34,9 @@ class SoundPlayer {
 
     // Play a brief silent HTML Audio to unlock browser autoplay policy
     try {
-      const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
-      await silentAudio.play();
+      const testAudio = new Audio('/assets/audio/red_code_1.wav');
+      await testAudio.play();
+      await new Promise((resolve, reject) => { testAudio.onended = resolve; testAudio.onerror = () => reject(new Error('Audio test failed')); });
       this.isAudioReady = true;
       return true;
     } catch (err) {
@@ -46,6 +48,7 @@ class SoundPlayer {
 
   playAlarmSequence(audioUrls, repeatCount = 3, intervalMs = 1500, onStart = null, onComplete = null, onError = null) {
     this.stop();
+    const generation = this.generation;
     if (!audioUrls || audioUrls.length === 0) {
       if (onComplete) onComplete();
       return;
@@ -56,11 +59,11 @@ class SoundPlayer {
     let started = false;
 
     const playCycle = () => {
-      if (!this.isPlaying) return;
+      if (!this.isPlaying || generation !== this.generation) return;
 
       let fileIdx = 0;
       const playNextFile = () => {
-        if (!this.isPlaying) return;
+        if (!this.isPlaying || generation !== this.generation) return;
         if (fileIdx >= audioUrls.length) {
           currentIteration++;
           if (currentIteration < repeatCount) {
@@ -75,29 +78,24 @@ class SoundPlayer {
         const url = audioUrls[fileIdx];
         fileIdx++;
 
-        this.currentAudio = new Audio(url);
-        this.currentAudio.play().then(() => {
+        const audio = new Audio(url);
+        this.currentAudio = audio;
+        audio.onended = () => { if (generation === this.generation) playNextFile(); };
+        const fail = (err) => {
+          if (generation !== this.generation) return;
+          this.isPlaying = false;
+          this.isAudioReady = false;
+          if (onError) onError(err);
+        };
+        audio.onerror = () => fail(new Error('Không tải được file âm thanh'));
+        audio.play().then(() => {
+          if (generation !== this.generation) { audio.pause(); return; }
           this.isAudioReady = true;
           if (!started) {
             started = true;
             if (onStart) onStart();
           }
-          this.currentAudio.onended = () => {
-            playNextFile();
-          };
-        }).catch((err) => {
-          console.warn('Browser blocked sound playback:', err);
-          this.isAudioReady = false;
-          if (onError) {
-            onError(err);
-          }
-          if (!started) {
-            started = true;
-            if (onStart) onStart();
-          }
-          // Continue to next sequence anyway
-          this.repeatTimer = setTimeout(playNextFile, 500);
-        });
+        }).catch(fail);
       };
 
       playNextFile();
@@ -106,12 +104,13 @@ class SoundPlayer {
     playCycle();
   }
 
-  playTestTone() {
-    this.stop();
+  async playTestTone() {
+    if (this.isPlaying) throw new Error('Đang phát cảnh báo; không thực hiện test');
     try {
       const ctx = this.audioContext || new (window.AudioContext || window.webkitAudioContext)();
       this.audioContext = ctx;
-      if (ctx.state === 'suspended') ctx.resume();
+      if (ctx.state === 'suspended') await ctx.resume();
+      if (ctx.state !== 'running') throw new Error('AudioContext chưa sẵn sàng');
 
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -128,13 +127,18 @@ class SoundPlayer {
 
       osc.start();
       osc.stop(ctx.currentTime + 0.5);
+      await new Promise((resolve) => { osc.onended = resolve; });
       this.isAudioReady = true;
+      return true;
     } catch (e) {
       console.warn('Tone test error:', e);
+      this.isAudioReady = false;
+      throw e;
     }
   }
 
   stop() {
+    this.generation++;
     this.isPlaying = false;
     if (this.repeatTimer) {
       clearTimeout(this.repeatTimer);

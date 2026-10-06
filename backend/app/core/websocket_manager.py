@@ -136,12 +136,13 @@ class ConnectionManager:
                 target_set = set(target_station_codes)
                 recipients = [(code, ws) for code, ws in self.active_stations.items() if code in target_set]
 
-        for code, ws in recipients:
+        async def deliver(code, ws):
             try:
-                await ws.send_text(json.dumps(message))
+                await asyncio.wait_for(ws.send_text(json.dumps(message)), timeout=1)
             except Exception as e:
                 logger.warning(f"Failed to send alarm to station {code}: {e}")
                 dead_stations.append((code, ws))
+        await asyncio.gather(*(deliver(code, ws) for code, ws in recipients))
 
         # 2. Send to all dashboard clients
         await self.broadcast_to_dashboards(message)
@@ -158,7 +159,7 @@ class ConnectionManager:
 
         for ws in dashboards:
             try:
-                await ws.send_text(msg_str)
+                await asyncio.wait_for(ws.send_text(msg_str), timeout=1)
             except Exception:
                 dead_dashboards.append(ws)
 
@@ -197,8 +198,9 @@ class ConnectionManager:
 
                 # Log system event
                 event_type = "DEVICE_CONNECTED" if connected else "DEVICE_DISCONNECTED"
+                station_id = (await session.execute(select(Station.id).where(Station.station_code == station_code))).scalar_one_or_none()
                 sys_event = SystemEvent(
-                    station_id=None,
+                    station_id=station_id,
                     event_type=event_type,
                     severity="INFO" if connected else "WARNING",
                     message=f"Station {station_code} {'connected' if connected else 'disconnected'}",
@@ -221,11 +223,16 @@ class ConnectionManager:
                     for code, last_seen in list(self.last_heartbeats.items()):
                         elapsed = (now - last_seen).total_seconds()
                         if elapsed > threshold_seconds:
-                            timed_out.append(code)
+                            timed_out.append((code, self.active_stations.get(code)))
 
-                for code in timed_out:
+                for code, ws in timed_out:
                     logger.warning(f"Station {code} timed out ({threshold_seconds}s with no heartbeat). Marking offline.")
-                    await self.disconnect_station(code)
+                    if ws is not None:
+                        try:
+                            await ws.close(code=1011, reason='Heartbeat timeout')
+                        except Exception:
+                            pass
+                    await self.disconnect_station(code, ws)
 
             except asyncio.CancelledError:
                 break

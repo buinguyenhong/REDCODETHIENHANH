@@ -18,6 +18,13 @@ from app.api.deps import get_current_user, get_current_active_admin
 
 router = APIRouter(prefix="/stations", tags=["Stations"])
 
+@router.post('/activate', response_model=StationOut)
+async def activate_station(credentials: StationHeartbeat, db: AsyncSession = Depends(get_db)):
+    station = (await db.execute(select(Station).options(selectinload(Station.department), selectinload(Station.receiver_groups)).where(Station.station_code == credentials.station_code))).scalar_one_or_none()
+    if not station or not station.enabled or hash_device_token(credentials.device_token) != station.device_token_hash:
+        raise HTTPException(status_code=401, detail='Thông tin kích hoạt trạm không hợp lệ')
+    return StationOut.model_validate(station)
+
 @router.get("", response_model=List[StationOut])
 async def list_stations(
     status_filter: Optional[str] = None,
@@ -200,7 +207,7 @@ async def get_station_active_alarms(
     if not device_token or hash_device_token(device_token) != station.device_token_hash:
         raise HTTPException(status_code=401, detail="Xác thực trạm không hợp lệ")
 
-    group_ids = [rg.id for rg in station.receiver_groups]
+    target_ids = set((await db.execute(select(AlarmStationState.alarm_id).where(AlarmStationState.station_id == station.id))).scalars().all())
 
     # Query all ACTIVE alarms
     alarm_stmt = (
@@ -227,8 +234,7 @@ async def get_station_active_alarms(
         if a.id in dismissed_ids:
             continue
         # Check receiver group mapping: None means all stations, else must match
-        rg_id = a.alarm_type.receiver_group_id if a.alarm_type else None
-        if rg_id is not None and rg_id not in group_ids:
+        if a.id not in target_ids:
             continue
 
         # Update or create AlarmStationState to DELIVERED/DISPLAYED
@@ -239,9 +245,7 @@ async def get_station_active_alarms(
         st_state = (await db.execute(st_state_stmt)).scalar_one_or_none()
         if st_state:
             if st_state.state == StationAlarmStateEnum.PENDING.value:
-                st_state.state = StationAlarmStateEnum.DISPLAYED.value
-                st_state.displayed_at = now
-                st_state.received_at = now
+                st_state.state = StationAlarmStateEnum.PENDING.value
                 st_state.updated_at = now
         else:
             db.add(AlarmStationState(
@@ -311,11 +315,9 @@ async def dismiss_station_alarm(
         raise HTTPException(status_code=404, detail="Báo động không tồn tại")
 
     # 3. Verify station belongs to the alarm's target receiver group
-    if alarm.alarm_type and alarm.alarm_type.receiver_group_id:
-        rg_id = alarm.alarm_type.receiver_group_id
-        station_group_ids = [rg.id for rg in station.receiver_groups]
-        if rg_id not in station_group_ids:
-            raise HTTPException(status_code=403, detail="Trạm không thuộc nhóm nhận của loại báo động này")
+    target = (await db.execute(select(AlarmStationState.id).where(AlarmStationState.alarm_id == alarm.id, AlarmStationState.station_id == station.id))).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=403, detail='Trạm không thuộc nhóm nhận của báo động này')
 
     now = datetime.now(timezone.utc)
 
@@ -326,6 +328,8 @@ async def dismiss_station_alarm(
     )
     st_state = (await db.execute(st_state_stmt)).scalar_one_or_none()
     if st_state:
+        if st_state.state == StationAlarmStateEnum.DISMISSED.value:
+            return {'status': 'dismissed_locally', 'alarm_id': alarm.id, 'station_code': station.station_code}
         st_state.state = StationAlarmStateEnum.DISMISSED.value
         st_state.dismissed_at = now
         st_state.updated_at = now
@@ -411,6 +415,7 @@ async def update_station(
     station.name = reg.name
     station.department_id = reg.department_id
     station.location = reg.location
+    station.enabled = reg.enabled
     raw_token = None
     if reg.device_token and reg.device_token.strip():
         raw_token = reg.device_token.strip()
@@ -425,6 +430,10 @@ async def update_station(
             db.add(ReceiverGroupStation(receiver_group_id=gid, station_id=station.id))
 
     await db.commit()
+    if not station.enabled or raw_token:
+        ws = manager.active_stations.get(station.station_code)
+        if ws:
+            await ws.close(code=1008)
     stmt = (
         select(Station)
         .options(selectinload(Station.department), selectinload(Station.receiver_groups))
@@ -444,6 +453,9 @@ async def delete_station(
     station = await db.get(Station, station_id)
     if not station:
         raise HTTPException(status_code=404, detail="Không tìm thấy trạm nhận")
-    await db.delete(station)
+    station.enabled = False
+    ws = manager.active_stations.get(station.station_code)
+    if ws:
+        await ws.close(code=1008)
     await db.commit()
     return {"message": "Đã xóa trạm nhận thành công"}

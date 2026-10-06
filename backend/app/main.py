@@ -17,7 +17,7 @@ from app.core.websocket_manager import manager
 from app.core.security import hash_device_token, decode_access_token
 from app.models import (
     Station, User, StationStatus, AlarmEvent, UserRole,
-    AlarmStationState, StationAlarmStateEnum
+    AlarmStationState, StationAlarmStateEnum, Alarm, AlarmStatus, SystemEvent
 )
 from app.core.n8n_outbox import outbox_worker
 
@@ -33,8 +33,12 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.AUDIO_UPLOAD_DIR, exist_ok=True)
     
     # 1. Create DB tables if not present
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if settings.ENVIRONMENT != 'production':
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    async with AsyncSessionLocal() as session:
+        await session.execute(update(Station).values(websocket_connected=False, status=StationStatus.OFFLINE.value))
+        await session.commit()
     logger.info("Database schema synchronized.")
 
     # 2. Seed default data if database is fresh
@@ -76,6 +80,21 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+
+@app.middleware('http')
+async def configuration_audit(request, call_next):
+    response = await call_next(request)
+    configuration = ('/api/users', '/api/departments', '/api/alarm-types', '/api/receiver-groups', '/api/audio', '/api/stations/register')
+    if request.method in ('POST', 'PUT', 'DELETE') and response.status_code < 400 and request.url.path.startswith(configuration):
+        authorization = request.headers.get('authorization', '')
+        payload = decode_access_token(authorization[7:]) if authorization.startswith('Bearer ') else None
+        try:
+            async with AsyncSessionLocal() as session:
+                session.add(SystemEvent(event_type='CONFIGURATION_CHANGED', severity='INFO', message='Configuration changed', event_metadata={'actor': payload.get('sub') if payload else None, 'method': request.method, 'path': request.url.path}, created_at=datetime.now(timezone.utc)))
+                await session.commit()
+        except Exception:
+            logger.exception('Configuration audit persistence failed')
+    return response
 
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -127,6 +146,9 @@ async def websocket_endpoint(
                     msg_type = msg.get("type")
 
                     if msg_type == "HEARTBEAT":
+                        if manager.active_stations.get(station_code) is not websocket:
+                            await websocket.close(code=1008)
+                            return
                         audio_ready = bool(msg.get("audio_ready", False))
                         client_ready = bool(msg.get("client_ready", True))
                         await manager.update_heartbeat(station_code, audio_ready, client_ready)
@@ -134,6 +156,10 @@ async def websocket_endpoint(
                             "type": "HEARTBEAT_ACK",
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }))
+                        async with AsyncSessionLocal() as session:
+                            pending = (await session.execute(select(AlarmStationState.id).join(Station).join(Alarm, Alarm.id == AlarmStationState.alarm_id).where(Station.station_code == station_code, Alarm.status == AlarmStatus.ACTIVE.value, AlarmStationState.received_at == None))).scalars().first()
+                        if pending:
+                            await websocket.send_text(json.dumps({'type': 'SYNC_REQUIRED'}))
 
                     elif msg_type == "AUDIO_STATE_CHANGED":
                         audio_ready = bool(msg.get("audio_ready", False))
@@ -151,14 +177,28 @@ async def websocket_endpoint(
                                 )).scalar_one_or_none()
 
                                 # 1. Update alarm_station_states table
+                                target = (await session.execute(select(AlarmStationState).where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st))).scalar_one_or_none()
+                                alarm = await session.get(Alarm, alarm_id)
+                                if not target or not alarm or alarm.status != AlarmStatus.ACTIVE.value or manager.active_stations.get(station_code) is not websocket or target.state == StationAlarmStateEnum.DISMISSED.value or event_type not in ['RECEIVED', 'DISPLAYED', 'AUDIO_STARTED', 'AUDIO_COMPLETED', 'AUDIO_FAILED']:
+                                    continue
+                                rank = {'PENDING': 0, 'DELIVERED': 1, 'DISPLAYED': 2, 'AUDIO_STARTED': 3, 'AUDIO_COMPLETED': 4, 'FAILED': 5}
+                                incoming = {'RECEIVED': 1, 'DISPLAYED': 2, 'AUDIO_STARTED': 3, 'AUDIO_COMPLETED': 4, 'AUDIO_FAILED': 5}[event_type]
+                                if event_type != 'RECEIVED' and incoming <= rank.get(target.state, 0):
+                                    # A deliberate successful retry may recover FAILED audio.
+                                    if not (target.state == 'FAILED' and event_type == 'AUDIO_STARTED'):
+                                        continue
                                 if st:
-                                    if event_type in ["RECEIVED", "DISPLAYED"]:
+                                    if event_type == 'RECEIVED':
+                                        if target.received_at is None:
+                                            target.received_at = now
+                                        else:
+                                            continue
+                                    elif event_type == "DISPLAYED":
                                         await session.execute(
                                             update(AlarmStationState)
                                             .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
                                             .values(
                                                 state=StationAlarmStateEnum.DISPLAYED.value,
-                                                received_at=now,
                                                 displayed_at=now,
                                                 updated_at=now
                                             )

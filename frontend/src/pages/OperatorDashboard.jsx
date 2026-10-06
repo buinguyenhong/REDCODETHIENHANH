@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
 import { api } from '../api/client';
@@ -14,6 +14,7 @@ export default function OperatorDashboard() {
   const [sending, setSending] = useState(false);
   const [recentAlarms, setRecentAlarms] = useState([]);
   const [statusMessage, setStatusMessage] = useState(null);
+  const requestRef = useRef(null);
 
   useEffect(() => {
     loadAlarmTypes();
@@ -23,20 +24,14 @@ export default function OperatorDashboard() {
   }, []);
 
   const isPermitted = (type) => {
-    if (user?.role === 'ADMIN') return true;
-    if (!type.allowed_department_ids || type.allowed_department_ids.length === 0) return true;
-    return user?.department_id && type.allowed_department_ids.includes(user.department_id);
+    return user?.role !== 'VIEWER';
   };
 
   const loadAlarmTypes = async () => {
     try {
-      const data = await api.getAlarmTypes(true);
+      const data = await api.getPermittedAlarmTypes();
       setAlarmTypes(data);
-      const permitted = data.filter((t) => {
-        if (user?.role === 'ADMIN') return true;
-        if (!t.allowed_department_ids || t.allowed_department_ids.length === 0) return true;
-        return user?.department_id && t.allowed_department_ids.includes(user.department_id);
-      });
+      const permitted = data;
       if (permitted.length > 0 && (!selectedType || !permitted.some((p) => p.id === selectedType.id))) {
         setSelectedType(permitted[0]);
       }
@@ -64,13 +59,16 @@ export default function OperatorDashboard() {
     setStatusMessage(null);
 
     try {
-      await api.createAlarm({
+      const payload = {
         alarm_type_id: selectedType.id,
         source_department_id: user?.department_id,
         source_location: location.trim() || user?.department?.name || 'Toàn viện',
         note: note.trim() || selectedType.description || '',
-        idempotency_key: `client-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-      });
+      };
+      const fingerprint = JSON.stringify(payload);
+      if (requestRef.current?.fingerprint !== fingerprint) requestRef.current = { fingerprint, key: crypto.randomUUID() };
+      await api.createAlarm({ ...payload, idempotency_key: requestRef.current.key });
+      requestRef.current = null;
 
       setStatusMessage({
         type: 'success',
