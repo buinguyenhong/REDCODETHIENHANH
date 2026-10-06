@@ -7,6 +7,7 @@ from fastapi import WebSocket
 from sqlalchemy import select, update
 from app.database import AsyncSessionLocal
 from app.models import Station, StationStatus, SystemEvent, AlarmEvent, Alarm, AlarmStatus
+from app.core.alarm_lifecycle import expire_alarms
 
 logger = logging.getLogger("redcode.websocket")
 
@@ -217,6 +218,13 @@ class ConnectionManager:
             try:
                 await asyncio.sleep(5)
                 now = datetime.now(timezone.utc)
+                async with AsyncSessionLocal() as session:
+                    expired_ids = await expire_alarms(session)
+                for alarm_id in expired_ids:
+                    message = {'type': 'ALARM_EXPIRED', 'alarm_id': alarm_id}
+                    await self.broadcast_to_dashboards(message)
+                    for code in list(self.active_stations):
+                        await self.send_to_station(code, message)
                 timed_out = []
 
                 async with self._lock:

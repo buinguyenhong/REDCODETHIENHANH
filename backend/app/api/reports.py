@@ -11,7 +11,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from zoneinfo import ZoneInfo
 from app.database import get_db
 from app.models import Alarm, AlarmType, Department, Station, SystemEvent, User, AlarmStationState
-from app.api.deps import get_current_user
+from app.api.deps import get_current_active_admin
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -55,7 +55,7 @@ async def get_summary_report(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user)
+    user: User = Depends(get_current_active_admin)
 ):
     start_dt, end_dt = parse_date_range(from_date, to_date)
 
@@ -111,7 +111,7 @@ async def export_alarms_xlsx(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user)
+    user: User = Depends(get_current_active_admin)
 ):
     start_dt, end_dt = parse_date_range(from_date, to_date)
 

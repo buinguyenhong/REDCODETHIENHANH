@@ -9,10 +9,10 @@ export default function Navigation() {
   const location = useLocation();
 
   const navItems = [
-    { path: '/', label: 'Bảng Điều Khiển', icon: Activity, roles: ['ADMIN', 'OPERATOR', 'VIEWER'] },
-    { path: '/kiosk', label: 'Màn Hình Trạm Nhận', icon: Monitor, roles: ['ADMIN', 'OPERATOR', 'VIEWER'] },
+    { path: '/', label: 'Bảng Điều Khiển & Log', icon: Activity, roles: ['ADMIN', 'OPERATOR'] },
+    { path: '/kiosk', label: 'Màn Hình Trạm Nhận', icon: Monitor, roles: ['ADMIN', 'OPERATOR'] },
     { path: '/admin', label: 'Quản Trị & Cấu Hình', icon: Settings, roles: ['ADMIN'] },
-    { path: '/reports', label: 'Báo Cáo & Xuất File', icon: BarChart3, roles: ['ADMIN', 'OPERATOR', 'VIEWER'] },
+    { path: '/reports', label: 'Báo Cáo & Xuất File', icon: BarChart3, roles: ['ADMIN'] },
   ];
 
   const allowedNav = navItems.filter((item) => !user || item.roles.includes(user.role));

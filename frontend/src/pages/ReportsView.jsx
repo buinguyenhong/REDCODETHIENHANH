@@ -126,7 +126,7 @@ export default function ReportsView() {
             <div className="text-3xl font-black text-red-600">
               {summary?.by_status?.ACTIVE || 0}
             </div>
-            <span className="text-xs text-red-600/80 font-mono mt-1 block">Chưa hoàn tất trình chiếu</span>
+            <span className="text-xs text-red-600/80 font-mono mt-1 block">Đang trong thời hạn hiệu lực</span>
           </div>
 
           <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm">

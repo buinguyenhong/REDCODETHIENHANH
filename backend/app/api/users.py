@@ -19,6 +19,7 @@ async def list_users(
     admin: User = Depends(get_current_active_admin)
 ):
     stmt = select(User).options(selectinload(User.department))
+    stmt = stmt.where(User.role.in_(['ADMIN', 'OPERATOR']))
     if department_id:
         stmt = stmt.where(User.department_id == department_id)
     stmt = stmt.order_by(User.id.asc())

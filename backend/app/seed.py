@@ -156,7 +156,6 @@ async def seed_database():
                 ("admin", "admin123456", "Quản Trị Viên Hệ Thống", dept_map["TT"].id, UserRole.ADMIN.value),
                 ("operator_cc", "pass123456", "Điều Dưỡng Cấp Cứu", dept_map["CC"].id, UserRole.OPERATOR.value),
                 ("operator_hscc", "pass123456", "Bác Sĩ Hồi Sức", dept_map["HSCC"].id, UserRole.OPERATOR.value),
-                ("viewer", "pass123456", "Trực Ban Giám Sát", dept_map["TT"].id, UserRole.VIEWER.value),
             ]
             for uname, pwd, dname, d_id, role in users_data:
                 user = User(

@@ -2,7 +2,8 @@ import { AlertOctagon, Volume2, CheckCircle2, ChevronRight, Clock, MapPin } from
 import { useWebSocket } from '../context/WebSocketContext';
 
 export default function AlarmOverlay() {
-  const { currentAlarm, activeAlarms, dismissCurrentAlarm, audioReady, unlockAudio } = useWebSocket();
+  const { currentAlarm: realAlarm, displayTest, closeDisplayTest, activeAlarms, dismissCurrentAlarm, audioReady, unlockAudio } = useWebSocket();
+  const currentAlarm = realAlarm || displayTest;
 
   if (!currentAlarm) return null;
 
@@ -27,7 +28,7 @@ export default function AlarmOverlay() {
         </div>
 
         {/* Audio unlock button if autoplay was blocked */}
-        {!audioReady && (
+        {!audioReady && !currentAlarm.isTest && (
           <button
             onClick={unlockAudio}
             className="flex items-center space-x-2 bg-yellow-400 text-slate-900 px-5 py-2.5 rounded-lg font-black text-sm uppercase shadow-2xl hover:bg-yellow-300 animate-bounce active:scale-95"
@@ -91,11 +92,11 @@ export default function AlarmOverlay() {
       {/* Bottom Action: Big Touch Dismiss Button */}
       <div className="w-full max-w-3xl mx-auto">
         <button
-          onClick={() => dismissCurrentAlarm('Bác sĩ/Điều dưỡng trực xác nhận')}
+          onClick={() => currentAlarm.isTest ? closeDisplayTest() : dismissCurrentAlarm('Bác sĩ/Điều dưỡng trực xác nhận')}
           className="w-full py-5 md:py-7 bg-white text-slate-950 font-black text-2xl md:text-3xl uppercase tracking-wider rounded-2xl shadow-[0_10px_30px_rgba(0,0,0,0.6)] hover:bg-slate-100 active:scale-[0.98] transition flex items-center justify-center space-x-3 border-b-8 border-slate-300"
         >
           <CheckCircle2 className="w-8 h-8 md:w-10 md:h-10 text-emerald-600" />
-          <span>TẮT CẢNH BÁO TẠI ĐÂY (DISMISS)</span>
+          <span>{currentAlarm.isTest ? 'KẾT THÚC KIỂM TRA' : 'TẮT CẢNH BÁO TẠI ĐÂY (DISMISS)'}</span>
         </button>
         <p className="text-center text-xs md:text-sm text-white/80 font-mono mt-3">
           * Thao tác tắt báo động chỉ áp dụng cho trạm này (Local Dismiss). Không tắt còi ở các khoa khác.

@@ -10,6 +10,9 @@ export function WebSocketProvider({ children }) {
   const [isConnected, setIsConnected] = useState(false);
   const [activeAlarms, setActiveAlarms] = useState([]); // FIFO queue of active alarms
   const [audioReady, setAudioReady] = useState(false);
+  const [displayTest, setDisplayTest] = useState(null);
+  const connectionTestsRef = useRef(new Map());
+  const serverOffsetRef = useRef(0);
   const [lastAck, setLastAck] = useState(null);
   const [recentStatusEvents, setRecentStatusEvents] = useState([]);
 
@@ -27,9 +30,10 @@ export function WebSocketProvider({ children }) {
   const lastHeartbeatAckRef = useRef(Date.now());
   const [audioRetry, setAudioRetry] = useState(0);
   const dismissedRef = useRef(new Set(JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]').map(item => item.alarm_id)));
-  const ordered = (alarms) => [...new Map(alarms.filter(a => !dismissedRef.current.has(a.alarm_id)).map(a => [a.alarm_id, a])).values()].sort((a,b) => a.server_sequence - b.server_sequence);
+  const ordered = (alarms) => [...new Map(alarms.filter(a => !dismissedRef.current.has(a.alarm_id) && (!a.expires_at || Date.parse(a.expires_at) > Date.now() + serverOffsetRef.current)).map(a => [a.alarm_id, a])).values()].sort((a,b) => a.server_sequence - b.server_sequence);
 
   const saveStationConfig = (config) => {
+    setActiveAlarms([]);
     setStationConfig(config);
     if (config) {
       localStorage.setItem('redcode_station_config', JSON.stringify(config));
@@ -49,6 +53,7 @@ export function WebSocketProvider({ children }) {
     }
     localStorage.setItem('redcode_pending_dismiss', JSON.stringify(remaining));
     const alarms = await api.getStationActiveAlarms(stationConfig.station_code, stationConfig.device_token);
+    if (alarms[0]?.server_time) serverOffsetRef.current = Date.parse(alarms[0].server_time) - Date.now();
     if (disposedRef.current || wsRef.current !== socket) return;
     const ids = new Set(alarms.map(a => a.alarm_id));
     setActiveAlarms(prev => ordered([...prev.filter(a => ids.has(a.alarm_id) || a.localReceivedAt >= startedAt), ...alarms]));
@@ -94,7 +99,7 @@ export function WebSocketProvider({ children }) {
           if (ws.readyState === WebSocket.OPEN) {
             if (Date.now() - lastHeartbeatAckRef.current > 20000) { ws.close(); return; }
             ws.send(JSON.stringify({
-              type: 'HEARTBEAT',
+              type: stationConfig?.device_token ? 'HEARTBEAT' : 'PING',
               audio_ready: soundPlayer.isAudioReady,
               client_ready: true,
             }));
@@ -103,6 +108,7 @@ export function WebSocketProvider({ children }) {
       };
 
       ws.onmessage = (event) => {
+        if (wsRef.current !== ws || disposedRef.current) return;
         try {
           const msg = JSON.parse(event.data);
           handleIncomingMessage(msg);
@@ -140,7 +146,15 @@ export function WebSocketProvider({ children }) {
   };
 
   const handleIncomingMessage = (msg) => {
+    const serverTime = msg.server_time || msg.timestamp || msg.data?.server_time;
+    if (serverTime) serverOffsetRef.current = Date.parse(serverTime) - Date.now();
     switch (msg.type) {
+      case 'PONG': {
+        lastHeartbeatAckRef.current = Date.now();
+        const pending = connectionTestsRef.current.get(msg.request_id);
+        if (pending) { clearTimeout(pending.timer); pending.resolve(Date.now() - pending.started); connectionTestsRef.current.delete(msg.request_id); }
+        break;
+      }
       case 'ALARM_EVENT':
         if (!stationConfig?.station_code) break;
         if (msg.event === 'ALARM_TRIGGERED' && msg.data) {
@@ -165,6 +179,7 @@ export function WebSocketProvider({ children }) {
         break;
 
       case 'ALARM_CANCELLED':
+      case 'ALARM_EXPIRED':
         if (msg.alarm_id) {
           dismissedRef.current.add(msg.alarm_id);
           setActiveAlarms((prev) => prev.filter((a) => a.alarm_id !== msg.alarm_id));
@@ -199,6 +214,13 @@ export function WebSocketProvider({ children }) {
   };
 
   // Play audio for current head of FIFO queue
+  useEffect(() => {
+    const interval = setInterval(() => setActiveAlarms(previous => {
+      const valid = ordered(previous);
+      return valid.length === previous.length ? previous : valid;
+    }), 500);
+    return () => clearInterval(interval);
+  }, []);
   useEffect(() => {
     if (activeAlarms.length > 0) {
       const currentAlarm = activeAlarms[0];
@@ -278,6 +300,7 @@ export function WebSocketProvider({ children }) {
   };
 
   const unlockAudio = async () => {
+    if (activeAlarms.length && soundPlayer.isPlaying) return false;
     const success = await soundPlayer.unlockAudio();
     setAudioReady(success);
     if (success) setAudioRetry(value => value + 1);
@@ -292,6 +315,8 @@ export function WebSocketProvider({ children }) {
 
   useEffect(() => {
     disposedRef.current = false;
+    wsRef.current = null;
+    setIsConnected(false);
     connect();
     return () => {
       disposedRef.current = true;
@@ -302,12 +327,25 @@ export function WebSocketProvider({ children }) {
     };
   }, [connect]);
 
+  const testConnection = () => new Promise((resolve, reject) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) { reject(new Error('Trạm chưa kết nối WebSocket')); return; }
+    const request_id = crypto.randomUUID();
+    const timer = setTimeout(() => { connectionTestsRef.current.delete(request_id); reject(new Error('Không nhận phản hồi trong 5 giây')); }, 5000);
+    connectionTestsRef.current.set(request_id, { resolve, reject, timer, started: Date.now() });
+    wsRef.current.send(JSON.stringify({ type: 'PING', request_id }));
+  });
+  const testDisplay = () => setDisplayTest({ alarm_id: 'display-test', code: 'KIỂM TRA HIỂN THỊ', name: 'ĐÂY LÀ CẢNH BÁO THỬ', department: stationConfig?.department, location: stationConfig?.location, note: 'Không tạo alarm thật, không gửi thông báo.', display_color: '#b91c1c', created_at: new Date().toISOString(), isTest: true });
+
   return (
     <WebSocketContext.Provider
       value={{
         isConnected,
         activeAlarms,
         currentAlarm: activeAlarms[0] || null,
+        displayTest,
+        testDisplay,
+        closeDisplayTest: () => setDisplayTest(null),
+        testConnection,
         dismissCurrentAlarm,
         audioReady,
         unlockAudio,

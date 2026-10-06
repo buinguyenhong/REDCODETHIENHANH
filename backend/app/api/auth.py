@@ -38,7 +38,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail="Tên đăng nhập hoặc mật khẩu không chính xác",
         )
 
-    if not user.enabled:
+    if not user.enabled or user.role not in ('ADMIN', 'OPERATOR'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tài khoản này đã bị vô hiệu hóa",

@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from app.core.alarm_lifecycle import expire_alarms
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func, desc, text
@@ -43,6 +44,7 @@ async def list_alarms(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    await expire_alarms(db)
     stmt = (
         select(Alarm)
         .options(
@@ -68,6 +70,7 @@ async def get_alarm(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    await expire_alarms(db)
     stmt = (
         select(Alarm)
         .options(
@@ -171,6 +174,7 @@ async def create_alarm(
         idempotency_key=alarm_in.idempotency_key,
         created_at=now,
         activated_at=now
+        , expires_at=now + timedelta(seconds=alarm_type.validity_seconds)
     )
     db.add(alarm)
 
@@ -282,6 +286,7 @@ async def create_alarm(
         "audio_sequence": alarm_type.audio_sequence or [],
         "server_sequence": new_seq,
         "created_at": now.isoformat()
+        , "expires_at": alarm.expires_at.isoformat(), "server_time": now.isoformat()
     }
     await manager.broadcast_alarm(broadcast_payload, target_station_codes=target_station_codes)
 

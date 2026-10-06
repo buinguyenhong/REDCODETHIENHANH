@@ -70,6 +70,7 @@ export const api = {
 
   // Stations
   activateStation: (data) => apiRequest('/stations/activate', { method: 'POST', body: JSON.stringify(data) }),
+  confirmDevice: (id) => apiRequest(`/stations/${id}/confirm-device`, { method: 'POST' }),
   getStations: (statusFilter) =>
     apiRequest(`/stations${statusFilter ? `?status_filter=${statusFilter}` : ''}`),
   getStation: (id) => apiRequest(`/stations/${id}`),

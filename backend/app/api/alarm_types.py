@@ -20,8 +20,6 @@ async def list_alarm_types(
 ):
     stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group), selectinload(AlarmType.department_permissions))
     if permitted_only and current_user.role != 'ADMIN':
-        if current_user.role == 'VIEWER':
-            return []
         stmt = stmt.join(DepartmentAlarmPermission).where(DepartmentAlarmPermission.department_id == current_user.department_id, DepartmentAlarmPermission.enabled == True)
     if enabled_only:
         stmt = stmt.where(AlarmType.enabled == True)
@@ -61,6 +59,7 @@ async def create_alarm_type(
         allowed_department_ids=type_in.allowed_department_ids or [],
         repeat_count=type_in.repeat_count,
         repeat_interval_ms=type_in.repeat_interval_ms
+        , validity_seconds=type_in.validity_seconds
     )
     db.add(alarm_type)
     await db.commit()

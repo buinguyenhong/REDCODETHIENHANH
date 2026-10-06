@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI):
             await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as session:
         await session.execute(update(Station).values(websocket_connected=False, status=StationStatus.OFFLINE.value))
+        await session.execute(update(User).where(User.role == 'VIEWER').values(enabled=False))
         await session.commit()
     logger.info("Database schema synchronized.")
 
@@ -179,6 +180,10 @@ async def websocket_endpoint(
                                 # 1. Update alarm_station_states table
                                 target = (await session.execute(select(AlarmStationState).where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st))).scalar_one_or_none()
                                 alarm = await session.get(Alarm, alarm_id)
+                                if alarm and alarm.expires_at:
+                                    expiry = alarm.expires_at.replace(tzinfo=timezone.utc) if alarm.expires_at.tzinfo is None else alarm.expires_at
+                                    if expiry <= now:
+                                        continue
                                 if not target or not alarm or alarm.status != AlarmStatus.ACTIVE.value or manager.active_stations.get(station_code) is not websocket or target.state == StationAlarmStateEnum.DISMISSED.value or event_type not in ['RECEIVED', 'DISPLAYED', 'AUDIO_STARTED', 'AUDIO_COMPLETED', 'AUDIO_FAILED']:
                                     continue
                                 rank = {'PENDING': 0, 'DELIVERED': 1, 'DISPLAYED': 2, 'AUDIO_STARTED': 3, 'AUDIO_COMPLETED': 4, 'FAILED': 5}
@@ -248,7 +253,7 @@ async def websocket_endpoint(
                                 await session.commit()
 
                     elif msg_type == "PING":
-                        await websocket.send_text(json.dumps({"type": "PONG"}))
+                        await websocket.send_text(json.dumps({"type": "PONG", "request_id": msg.get('request_id'), "server_time": datetime.now(timezone.utc).isoformat()}))
 
                 except json.JSONDecodeError:
                     pass
@@ -274,7 +279,7 @@ async def websocket_endpoint(
         async with AsyncSessionLocal() as session:
             stmt = select(User).where(User.username == username)
             user = (await session.execute(stmt)).scalar_one_or_none()
-            if not user or not user.enabled or user.role not in [UserRole.ADMIN.value, UserRole.OPERATOR.value, UserRole.VIEWER.value]:
+            if not user or not user.enabled or user.role not in [UserRole.ADMIN.value, UserRole.OPERATOR.value]:
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorized or inactive user")
                 return
 
@@ -293,7 +298,7 @@ async def websocket_endpoint(
                 try:
                     msg = json.loads(data_text)
                     if msg.get("type") == "PING":
-                        await websocket.send_text(json.dumps({"type": "PONG"}))
+                        await websocket.send_text(json.dumps({"type": "PONG", "request_id": msg.get('request_id'), "server_time": datetime.now(timezone.utc).isoformat()}))
                 except json.JSONDecodeError:
                     pass
 

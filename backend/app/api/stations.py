@@ -15,8 +15,25 @@ from app.schemas import StationRegister, StationHeartbeat, StationDismiss, Stati
 from app.core.security import hash_device_token
 from app.core.websocket_manager import manager
 from app.api.deps import get_current_user, get_current_active_admin
+from app.core.alarm_lifecycle import expire_alarms
 
 router = APIRouter(prefix="/stations", tags=["Stations"])
+
+@router.post('/{station_id}/confirm-device', response_model=StationOut)
+async def confirm_device(station_id: int, db: AsyncSession = Depends(get_db), admin: User = Depends(get_current_active_admin)):
+    station = (await db.execute(select(Station).options(selectinload(Station.department), selectinload(Station.receiver_groups)).where(Station.id == station_id))).scalar_one_or_none()
+    if not station or not station.enabled:
+        raise HTTPException(status_code=404, detail='Trạm không tồn tại hoặc bị vô hiệu hóa')
+    raw_token = secrets.token_urlsafe(32)
+    station.device_token_hash = hash_device_token(raw_token)
+    db.add(SystemEvent(station_id=station.id, event_type='DEVICE_CONFIRMED', severity='INFO', message='Admin confirmed receiver device', event_metadata={'actor': admin.username}, created_at=datetime.now(timezone.utc)))
+    await db.commit()
+    ws = manager.active_stations.get(station.station_code)
+    if ws:
+        await ws.close(code=1008, reason='Device identity replaced')
+    result = StationOut.model_validate(station)
+    result.raw_device_token = raw_token
+    return result
 
 @router.post('/activate', response_model=StationOut)
 async def activate_station(credentials: StationHeartbeat, db: AsyncSession = Depends(get_db)):
@@ -193,6 +210,7 @@ async def get_station_active_alarms(
     AUTHENTICATED: Must supply valid device token for this specific station.
     Returns undismissed active alarms in FIFO order (by server_sequence).
     """
+    await expire_alarms(db)
     stmt = (
         select(Station)
         .options(selectinload(Station.receiver_groups))
@@ -273,6 +291,8 @@ async def get_station_active_alarms(
             "audio_sequence": a.alarm_type.audio_sequence or [] if a.alarm_type else [],
             "server_sequence": a.server_sequence,
             "created_at": a.created_at.isoformat() if a.created_at else ""
+            , "expires_at": (a.expires_at.replace(tzinfo=timezone.utc) if a.expires_at.tzinfo is None else a.expires_at).isoformat() if a.expires_at else None,
+            "server_time": now.isoformat()
         })
 
     await db.commit()

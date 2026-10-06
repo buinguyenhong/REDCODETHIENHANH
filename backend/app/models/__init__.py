@@ -14,10 +14,10 @@ def utc_now() -> datetime:
 class UserRole(str, enum.Enum):
     ADMIN = "ADMIN"
     OPERATOR = "OPERATOR"
-    VIEWER = "VIEWER"
 
 class AlarmStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
+    EXPIRED = "EXPIRED"
     CANCELLED = "CANCELLED"
 
 class StationStatus(str, enum.Enum):
@@ -141,6 +141,7 @@ class AlarmType(Base):
     allowed_department_ids: Mapped[Optional[Any]] = mapped_column(JSON, default=list) # Kept for backward compatibility
     repeat_count: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     repeat_interval_ms: Mapped[int] = mapped_column(Integer, default=1500, nullable=False)
+    validity_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -176,6 +177,7 @@ class Alarm(Base):
     status: Mapped[str] = mapped_column(String(30), default=AlarmStatus.ACTIVE.value, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     activated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     server_sequence: Mapped[int] = mapped_column(Integer, index=True, default=0, nullable=False)
     idempotency_key: Mapped[Optional[str]] = mapped_column(String(100), unique=True, index=True, nullable=True)

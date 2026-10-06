@@ -119,11 +119,11 @@ export default function Login() {
             </button>
             <button
               type="button"
-              onClick={() => setPreset('viewer', 'pass123456')}
+              onClick={() => setPreset('operator_hscc', 'pass123456')}
               className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
             >
-              <span className="font-bold text-blue-600 block">Giám Sát</span>
-              viewer
+              <span className="font-bold text-blue-600 block">Hồi Sức</span>
+              operator_hscc
             </button>
           </div>
         </div>

@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # --- Auth ---
@@ -36,7 +36,7 @@ class UserBase(BaseModel):
     username: str
     display_name: str
     department_id: Optional[int] = None
-    role: Literal['ADMIN', 'OPERATOR', 'VIEWER'] = "OPERATOR"
+    role: Literal['ADMIN', 'OPERATOR'] = "OPERATOR"
     enabled: bool = True
 
 class UserCreate(UserBase):
@@ -45,7 +45,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     display_name: Optional[str] = None
     department_id: Optional[int] = None
-    role: Optional[Literal['ADMIN', 'OPERATOR', 'VIEWER']] = None
+    role: Optional[Literal['ADMIN', 'OPERATOR']] = None
     enabled: Optional[bool] = None
     password: Optional[str] = None
 
@@ -132,6 +132,7 @@ class AlarmTypeBase(BaseModel):
     allowed_department_ids: Optional[List[int]] = []
     repeat_count: int = Field(default=3, ge=1, le=100)
     repeat_interval_ms: int = Field(default=1500, ge=0, le=600000)
+    validity_seconds: int = Field(default=300, ge=10, le=86400)
 
     @field_validator('audio_sequence')
     @classmethod
@@ -154,6 +155,7 @@ class AlarmTypeUpdate(BaseModel):
     allowed_department_ids: Optional[List[int]] = None
     repeat_count: Optional[int] = Field(default=None, ge=1, le=100)
     repeat_interval_ms: Optional[int] = Field(default=None, ge=0, le=600000)
+    validity_seconds: Optional[int] = Field(default=None, ge=10, le=86400)
     _local_audio = field_validator('audio_sequence')(AlarmTypeBase.local_audio.__func__)
 
 class AlarmTypeOut(AlarmTypeBase):
@@ -223,6 +225,7 @@ class AlarmOut(BaseModel):
     idempotency_key: Optional[str] = None
     created_at: datetime
     activated_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
     cancelled_at: Optional[datetime] = None
     alarm_type: Optional[AlarmTypeOut] = None
     source_department: Optional[DepartmentOut] = None
@@ -230,6 +233,11 @@ class AlarmOut(BaseModel):
     events: List[AlarmEventOut] = []
     station_states: List[AlarmStationStateOut] = []
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator('created_at', 'activated_at', 'expires_at', 'cancelled_at', mode='before')
+    @classmethod
+    def utc_timestamps(cls, value):
+        return value.replace(tzinfo=timezone.utc) if isinstance(value, datetime) and value.tzinfo is None else value
 
 # --- Notification Outbox ---
 class NotificationOutboxOut(BaseModel):

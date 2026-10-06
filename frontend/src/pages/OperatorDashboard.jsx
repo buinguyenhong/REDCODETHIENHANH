@@ -24,7 +24,7 @@ export default function OperatorDashboard() {
   }, []);
 
   const isPermitted = (type) => {
-    return user?.role !== 'VIEWER';
+    return ['ADMIN', 'OPERATOR'].includes(user?.role);
   };
 
   const loadAlarmTypes = async () => {
@@ -300,7 +300,7 @@ export default function OperatorDashboard() {
                               isActive ? 'bg-red-600' : 'bg-slate-400'
                             }`}
                           ></span>
-                          <span>{isActive ? 'ĐANG BÁO ĐỘNG' : alarm.status}</span>
+                          <span>{isActive ? 'ĐANG BÁO ĐỘNG' : alarm.status === 'EXPIRED' ? 'CẢNH BÁO ĐÃ PHÁT' : 'ĐÃ HỦY'}</span>
                         </span>
 
                         {isActive && (

@@ -53,6 +53,7 @@ export default function AdminDashboard() {
     repeat_count: 4,
     repeat_interval_ms: 1200,
     allowed_department_ids: [],
+    validity_seconds: 300,
   });
 
   const [stationForm, setStationForm] = useState({
@@ -173,6 +174,7 @@ export default function AdminDashboard() {
         repeat_count: item.repeat_count || 4,
         repeat_interval_ms: item.repeat_interval_ms || 1200,
         allowed_department_ids: item.allowed_department_ids || [],
+        validity_seconds: item.validity_seconds || 300,
       });
     } else {
       setAlarmTypeForm({
@@ -186,6 +188,7 @@ export default function AdminDashboard() {
         repeat_count: 4,
         repeat_interval_ms: 1200,
         allowed_department_ids: [],
+        validity_seconds: 300,
       });
     }
     setModalType('alarmType');
@@ -204,6 +207,7 @@ export default function AdminDashboard() {
         audio_sequence: alarmTypeForm.audio_file_path.split('\n').map(path => path.trim()).filter(Boolean),
         repeat_count: parseInt(alarmTypeForm.repeat_count, 10),
         repeat_interval_ms: parseInt(alarmTypeForm.repeat_interval_ms, 10),
+        validity_seconds: Number(alarmTypeForm.validity_seconds),
         enabled: true,
         allowed_department_ids: alarmTypeForm.allowed_department_ids,
       };
@@ -266,7 +270,6 @@ export default function AdminDashboard() {
         name: stationForm.name.trim(),
         department_id: stationForm.department_id ? parseInt(stationForm.department_id, 10) : null,
         location: stationForm.location.trim(),
-        device_token: stationForm.device_token.trim() || undefined,
         receiver_group_ids: stationForm.receiver_group_ids.map((id) => parseInt(id, 10)),
       };
 
@@ -275,9 +278,7 @@ export default function AdminDashboard() {
         notify(`Đã cập nhật trạm nhận ${payload.station_code}`);
       } else {
         const res = await api.registerStation(payload);
-        if (res && res.raw_device_token) {
-          alert(`Đã tạo trạm ${payload.station_code} thành công!\n\nQUAN TRỌNG: Mật khẩu kết nối bảo mật (Device Token) là:\n${res.raw_device_token}\n\nHãy sao chép mã này vào máy Kiosk trạm. Hệ thống sẽ không hiển thị lại mã này!`);
-        }
+        notify('Trạm đã tạo. Mở màn hình trạm nhận trên thiết bị và đăng nhập Admin để xác nhận.');
         notify(`Đã đăng ký trạm nhận mới ${payload.station_code}`);
       }
       setModalType(null);
@@ -1130,6 +1131,7 @@ export default function AdminDashboard() {
             </div>
 
             <form onSubmit={saveAlarmType} className="space-y-4 text-xs font-mono">
+              <label className="block">Thời gian hiệu lực cảnh báo (giây)<input type="number" min="10" max="86400" required className="w-full border p-2" value={alarmTypeForm.validity_seconds} onChange={event => setAlarmTypeForm({...alarmTypeForm, validity_seconds: event.target.value})} /></label>
               <label className="block">Chuỗi audio theo thứ tự (mỗi dòng một đường dẫn local)<textarea rows={4} className="w-full border p-2" value={alarmTypeForm.audio_file_path} onChange={event => setAlarmTypeForm({...alarmTypeForm, audio_file_path: event.target.value})} /></label>
               <fieldset className="border border-slate-300 p-3">
                 <legend>Khoa/phòng được phép phát</legend>
@@ -1347,18 +1349,7 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-600 font-bold uppercase mb-1">
-                  Device Token (Mật khẩu kết nối của trạm):
-                </label>
-                <input
-                  type="text"
-                  value={stationForm.device_token}
-                  onChange={(e) => setStationForm({ ...stationForm, device_token: e.target.value })}
-                  placeholder={editItem ? 'Để trống nếu không đổi token' : 'Để trống để server tự sinh token ngẫu nhiên an toàn'}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-900"
-                />
-              </div>
+              <p>Trên thiết bị nhận, Admin chọn trạm và bấm “Xác nhận thiết bị này”. Không cần nhập mã bảo mật thủ công.</p>
 
               <div className="flex space-x-3 pt-3 border-t border-slate-100">
                 <button
@@ -1518,7 +1509,6 @@ export default function AdminDashboard() {
                   >
                     <option value="OPERATOR">OPERATOR (Phát/Xử lý)</option>
                     <option value="ADMIN">ADMIN (Quản trị)</option>
-                    <option value="VIEWER">VIEWER (Chỉ xem)</option>
                   </select>
                 </div>
               </div>

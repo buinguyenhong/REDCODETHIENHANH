@@ -38,7 +38,7 @@ async def get_current_user(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not user.enabled:
+    if not user.enabled or user.role not in ('ADMIN', 'OPERATOR'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is deactivated",
