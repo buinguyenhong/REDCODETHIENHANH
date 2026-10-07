@@ -8,6 +8,9 @@ import OperatorDashboard from './pages/OperatorDashboard';
 import ReceiverStationView from './pages/ReceiverStationView';
 import AdminDashboard from './pages/AdminDashboard';
 import ReportsView from './pages/ReportsView';
+import { useEffect, useState } from 'react';
+import InitialSetup from './pages/InitialSetup';
+import IntegrationSettings from './pages/IntegrationSettings';
 
 function ProtectedRoute({ children, requiredRole }) {
   const { user, loading } = useAuth();
@@ -32,6 +35,11 @@ function ProtectedRoute({ children, requiredRole }) {
 }
 
 export default function App() {
+  const [setup, setSetup] = useState(null);
+  useEffect(() => { fetch('/api/setup/status').then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(setSetup).catch(() => setSetup({ error: true })); }, []);
+  if (!setup) return <p className="p-8">Đang kiểm tra hệ thống…</p>;
+  if (setup.error) return <p className="p-8">Không kết nối được máy chủ. Vui lòng tải lại sau khi dịch vụ khởi động.</p>;
+  if (!setup.configured) return <InitialSetup />;
   return (
     <AuthProvider>
       <WebSocketProvider>
@@ -46,6 +54,7 @@ export default function App() {
           <main className="flex-1">
             <Routes>
               <Route path="/login" element={<Login />} />
+              <Route path="/admin/settings" element={<ProtectedRoute requiredRole="ADMIN"><IntegrationSettings /></ProtectedRoute>} />
               <Route
                 path="/"
                 element={

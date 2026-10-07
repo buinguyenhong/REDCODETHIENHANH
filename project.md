@@ -1698,3 +1698,9 @@ Test API SQLite, unit audio và build không đóng acceptance mạng/loa. Các 
 - Permission source duy nhất department_alarm_permissions. allowed_department_ids chỉ là API projection/command tương thích; bỏ cột JSON sau import valid legacy pairs còn thiếu, normalized grant/denial ưu tiên.
 - Report khoảng [start, next hospital midnight) với timezone Asia/Ho_Chi_Minh, datetime có offset quy đổi UTC, naive datetime là giờ bệnh viện.
 - Production forward-only Alembic upgrade head; rollback bằng backup đã kiểm chứng, không downgrade giả.
+
+# 48. Bootstrap database và optional n8n
+
+- Docker cài phần mềm trước PostgreSQL connection: database-independent setup, token có tại server, PostgreSQL-only probe/migrate/seed; chỉ mở main app sau hoàn tất, runtime secrets persistent bảo vệ, khóa bootstrap sau thiết lập. Chưa DB không vận hành alarm; không dùng SQLite production staging data rồi chuyển ngầm.
+- n8n optional, Admin cấu hình/test/bật qua UI, source DB; disabled không enqueue alarm mới, enabled outage durable retry. First-enable cutoff không replay history cũ. Tạm disable giữ existing eligible jobs để retry khi bật lại; legacy outbox trước cutoff không gửi tự động.
+- Upgrade migration integration mặc định disabled, Admin cần bật lại. Wizard không tự provision PostgreSQL/network/TLS hoặc thay DB đang vận hành.

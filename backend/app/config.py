@@ -1,6 +1,17 @@
 from typing import List, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator, model_validator
+import os
+import json
+from pathlib import Path
+
+# Installer-owned persistent configuration takes precedence over deployment env.
+runtime_path = Path(os.getenv('REDCODE_RUNTIME_CONFIG', '/app/config/runtime.json'))
+if runtime_path.is_file():
+    runtime = json.loads(runtime_path.read_text(encoding='utf-8'))
+    for key in ('DATABASE_URL', 'SECRET_KEY', 'INITIAL_ADMIN_PASSWORD'):
+        if key in runtime:
+            os.environ[key] = runtime[key]
 
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"

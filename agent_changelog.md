@@ -6,6 +6,25 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-07 — Cài trước/kết nối DB sau và optional n8n
+
+- Docker launcher `start_server.py` chọn bootstrap app độc lập DB khi DATABASE_URL trống; setup token lấy tại server, API test/complete yêu cầu token, PostgreSQL-only. Complete chạy Alembic + production Admin seed trước lưu runtime config atomic mode 0600 rồi chuyển app. Setup endpoint không còn hoạt động khi cấu hình đã hoàn tất.
+- Volume `redcode_runtime_config` lưu config/secret; wizard không thay external network hay cài PostgreSQL. PostgreSQL chưa cấu hình không có nghiệp vụ alarm. Có env DB vẫn migrate trước startup bình thường.
+- Migration `20261007_integrations` và Admin `/admin/settings` lưu enabled/webhook/timeout/retries trong DB, test event riêng, audit không URL. Disabled không enqueue alarm mới; first-enable cutoff bỏ backlog cũ; outage khi enabled vẫn durable retry. Upgrade mặc định integration disabled, cần Admin bật lại.
+- Backend full suite cuối **52 passed**, gồm live transport và setup/token/permission/disabled→enabled/cutoff regression. Legacy suites dùng integration fixture enabled để giữ test crash/outbox meaningful. End-to-end wizard trên PostgreSQL/container thực cần môi trường Docker/PG; không coi mocked validation là nghiệm thu deployment.
+- Frontend **8 tests PASS**, build **PASS**; Alembic upgrade head và targeted setup/schema tests **PASS**. Bổ sung cutoff legacy backlog regression để kiểm tra không gửi history trước first enable.
+
+## 2026-10-07 — Sơ đồ flow triển khai production
+
+- Thêm `docs/production_deployment_flow.md`: Mermaid topology/tổng thể/nghiệp vụ/provisioning/upgrade/rollback, 12 bước với thao tác và điều kiện chuyển bước, phiếu cấu hình, nhánh xử lý lỗi và checklist bàn giao.
+- Liên kết từ README và runbook production. Các flow hướng dẫn thực thi theo release hiện tại, không là bằng chứng đã nghiệm thu site.
+
+## 2026-10-07 — Runbooks kiểm thử và production
+
+- Thêm `docs/testing_guide.md`: fixture staging/site, commands, T01–T13 covering auth/lifecycle/audio/expiry/permission/reconnect/outbox/restart/load/report/migration/PC/Android, mapping acceptance 01–25 và mẫu evidence.
+- Thêm `docs/production_deployment.md`: fresh PostgreSQL hiện có/external network/env/TLS/build/Alembic, Admin provisioning/audio/kiosk, health/outbox, backup/restore drill, forward-only upgrade/rollback và xử lý DB create_all cũ.
+- Liên kết hai tài liệu từ README; đối chiếu commands/API/config với release `9b01d4a`. Đây là hướng dẫn thực hiện tại site, không ghi nhận các bước deployment/physical acceptance đã chạy. Đợt này chỉ thay tài liệu.
+
 ## 2026-10-07 — Lifecycle, permission, recovery và CI
 
 ### Thay đổi

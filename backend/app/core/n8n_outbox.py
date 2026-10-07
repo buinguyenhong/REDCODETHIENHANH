@@ -6,6 +6,7 @@ from sqlalchemy import select, update, or_
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import NotificationOutbox, OutboxStatus, SystemEvent
+from app.core.integration_settings import get_integration
 
 logger = logging.getLogger("redcode.n8n_outbox")
 
@@ -37,21 +38,22 @@ class OutboxWorker:
         logger.info("Notification outbox worker stopped.")
 
     async def process_outbox(self):
-        if not settings.N8N_WEBHOOK_URL or not settings.N8N_WEBHOOK_URL.strip():
-            return
-
         now = datetime.now(timezone.utc)
         now_naive = now.replace(tzinfo=None)
         async with AsyncSessionLocal() as session:
+            integration = await get_integration(session)
+            if not integration or not integration.enabled or not integration.enabled_since:
+                return
             await session.execute(update(NotificationOutbox).where(NotificationOutbox.status == OutboxStatus.PROCESSING.value, or_(NotificationOutbox.locked_at == None, NotificationOutbox.locked_at < now - timedelta(minutes=5))).values(status=OutboxStatus.FAILED.value, locked_at=None))
             await session.commit()
             stmt = (
                 select(NotificationOutbox)
                 .where(
                     NotificationOutbox.status.in_([OutboxStatus.PENDING.value, OutboxStatus.FAILED.value]),
-                    NotificationOutbox.attempt_count < settings.N8N_MAX_RETRIES
+                    NotificationOutbox.attempt_count < integration.max_retries
                     , or_(NotificationOutbox.next_attempt_at == None, NotificationOutbox.next_attempt_at <= now)
                 )
+                .where(NotificationOutbox.created_at >= integration.enabled_since)
                 .order_by(NotificationOutbox.created_at.asc())
                 .limit(20)
             )
@@ -77,13 +79,17 @@ class OutboxWorker:
 
     async def _send_item(self, item_id: int):
         async with AsyncSessionLocal() as session:
+            integration = await get_integration(session)
+            if not integration or not integration.enabled or not integration.enabled_since:
+                return
             now = datetime.now(timezone.utc)
             # Claim one job immediately before I/O. CAS prevents two workers
             # claiming the same job; increment persisted before a possible crash.
             claimed = await session.execute(update(NotificationOutbox).where(
                 NotificationOutbox.id == item_id,
                 NotificationOutbox.status.in_(['PENDING', 'FAILED']),
-                NotificationOutbox.attempt_count < settings.N8N_MAX_RETRIES,
+                NotificationOutbox.attempt_count < integration.max_retries,
+                NotificationOutbox.created_at >= integration.enabled_since,
                 or_(NotificationOutbox.next_attempt_at == None, NotificationOutbox.next_attempt_at <= now)
             ).values(status='PROCESSING', locked_at=now,
                      attempt_count=NotificationOutbox.attempt_count + 1))
@@ -96,8 +102,8 @@ class OutboxWorker:
             last_err = ""
 
             try:
-                async with httpx.AsyncClient(timeout=settings.N8N_TIMEOUT_SECONDS) as client:
-                    res = await client.post(settings.N8N_WEBHOOK_URL, json=item.payload, headers={'Idempotency-Key': f'redcode-outbox-{item.id}'})
+                async with httpx.AsyncClient(timeout=integration.timeout_seconds) as client:
+                    res = await client.post(integration.webhook_url, json=item.payload, headers={'Idempotency-Key': f'redcode-outbox-{item.id}'})
                     if res.is_success:
                         success = True
                     else:
@@ -129,7 +135,7 @@ class OutboxWorker:
             else:
                 session.add(SystemEvent(event_type='N8N_REQUEST_FAILED', severity='WARNING', message='n8n delivery attempt failed', event_metadata={'outbox_id': item.id, 'attempt': item.attempt_count}, created_at=now))
                 item.last_error = last_err
-                if item.attempt_count >= settings.N8N_MAX_RETRIES:
+                if item.attempt_count >= integration.max_retries:
                     item.status = OutboxStatus.FAILED.value
                     item.next_attempt_at = None
                     session.add(SystemEvent(
@@ -140,7 +146,7 @@ class OutboxWorker:
                         event_metadata={"alarm_id": item.alarm_id, "outbox_id": item.id, "attempts": item.attempt_count},
                         created_at=now
                     ))
-                    logger.warning(f"Outbox notification {item.id} exhausted {settings.N8N_MAX_RETRIES} attempts. Error: {last_err}")
+                    logger.warning(f"Outbox notification {item.id} exhausted {integration.max_retries} attempts.")
                 else:
                     item.status = OutboxStatus.FAILED.value
                     # Exponential backoff: 2s, 4s, 8s...

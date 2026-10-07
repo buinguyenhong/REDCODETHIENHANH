@@ -87,6 +87,10 @@ app.add_middleware(
 
 app.include_router(api_router, prefix="/api")
 
+@app.get('/api/setup/status')
+async def setup_status():
+    return {'configured': True, 'mode': 'application'}
+
 @app.middleware('http')
 async def configuration_audit(request, call_next):
     response = await call_next(request)

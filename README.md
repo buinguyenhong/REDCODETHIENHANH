@@ -8,8 +8,23 @@ Hệ thống cảnh báo trên mạng LAN: **FastAPI + React/Vite + Nginx + Post
 
 - [`project.md`](project.md): đặc tả hợp nhất, yêu cầu reliability và quyết định nghiệp vụ hiện hành. Mục 45–46 được ưu tiên khi xung đột với baseline.
 - [`agent_changelog.md`](agent_changelog.md): lịch sử thay đổi, commit, kết quả kiểm thử và ma trận nghiệm thu.
+- [`docs/testing_guide.md`](docs/testing_guide.md): regression commands, 13 nhóm kiểm thử LAN/browser/loa, ma trận acceptance và mẫu biên bản.
+- [`docs/production_deployment.md`](docs/production_deployment.md): triển khai server thực, PostgreSQL/network/TLS, provisioning, backup/restore, upgrade/rollback và chẩn đoán vận hành.
+- [`docs/production_deployment_flow.md`](docs/production_deployment_flow.md): sơ đồ dễ theo dõi, 12 bước triển khai chi tiết, luồng xác nhận trạm, nâng cấp và rollback.
 
 ## Luồng vận hành
+
+### Cài ứng dụng trước, kết nối PostgreSQL sau
+
+Docker hỗ trợ `DATABASE_URL=`: launcher mở giao diện thiết lập độc lập DB. Production vẫn cần `DEMO_MODE=false`, SECRET_KEY riêng và origin allowlist trong deployment env. Mở địa chỉ Redcode, IT lấy mã qua `docker compose exec backend cat /app/config/setup-token`, nhập PostgreSQL URL và mật khẩu Admin ≥12 ký tự. Kiểm tra → migrate → tạo Admin → ứng dụng tự chuyển sang chế độ chính. Runtime config được lưu mode 0600 trong volume `redcode_runtime_config`; backup bảo mật volume này. Không có PostgreSQL thì chưa vận hành alarm.
+
+DB/network/user phải được IT chuẩn bị trước; wizard không tự cài PostgreSQL hoặc gắn external Docker network. Cấu hình DB đã có qua env vẫn dùng startup Alembic như trước. Bootstrap đóng sau hoàn tất, không phải công cụ đổi DB đang vận hành.
+
+### Kết nối n8n sau
+
+Admin → **CÀI ĐẶT TÍCH HỢP n8n** (`/admin/settings`) nhập webhook/timeout/retries, test rồi bật/lưu; không cần recreate backend. Khi tắt không tạo outbox cho alarm mới. Lần bật đầu không gửi backlog cũ trước `enabled_since`. Tắt tạm dừng worker; các job đủ điều kiện từ thời điểm đã bật lần đầu vẫn retry khi bật lại. Event test là `REDCODE_CONNECTION_TEST`, workflow cần phân biệt với alarm thật.
+
+Migration mới `20261007_integrations` mặc định **tắt** n8n kể cả deployment có env webhook cũ. Sau upgrade, Admin cần cấu hình/bật lại; env N8N_* không còn source cấu hình runtime. Webhook lưu trong DB, chỉ Admin đọc/chỉnh; không chứa user/password trong URL và không ghi URL vào audit.
 
 1. **ADMIN** cấu hình khoa, quyền phát alarm, loại alarm, audio và nhóm nhận; quản trị báo cáo/XLSX.
 2. Trên máy nhận, Admin đăng nhập, chọn trạm và **xác nhận thiết bị**. Hệ thống tự cấp/lưu credential nội bộ, không cần nhập hoặc copy token. Rotate credential thu hồi kết nối cũ.

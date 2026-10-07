@@ -40,6 +40,15 @@ class OutboxStatus(str, enum.Enum):
     SENT = "SENT"
     FAILED = "FAILED"
 
+class IntegrationSettings(Base):
+    __tablename__ = 'integration_settings'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    webhook_url: Mapped[str] = mapped_column(Text, default='', nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    max_retries: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    enabled_since: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
 class Department(Base):
     __tablename__ = "departments"
 

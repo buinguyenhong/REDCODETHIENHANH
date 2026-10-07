@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
+import { Link } from 'react-router-dom';
 import {
   Activity,
   Server,
@@ -500,6 +501,7 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-8">
       <div className="max-w-7xl mx-auto space-y-6">
+        <Link to="/admin/settings" className="inline-block border border-slate-400 px-4 py-3">CÀI ĐẶT TÍCH HỢP n8n</Link>
         {/* Top Header */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
           <div>

@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.schemas import AlarmCreate, AlarmOut, AlarmEventOut
 from app.core.websocket_manager import manager
+from app.core.integration_settings import get_integration
 from app.api.deps import get_current_user, get_current_operator_or_admin
 
 router = APIRouter(prefix="/alarms", tags=["Alarms"])
@@ -280,7 +281,9 @@ async def create_alarm(
         status=OutboxStatus.PENDING.value,
         created_at=now
     )
-    db.add(outbox_item)
+    integration = await get_integration(db)
+    if integration and integration.enabled:
+        db.add(outbox_item)
     await db.commit()
 
     # 10. Realtime WebSocket Broadcast
