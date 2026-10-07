@@ -1,9 +1,9 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
-from app.core.alarm_lifecycle import expire_alarms
+from app.core.alarm_lifecycle import expire_alarms, broadcast_terminal_alarm
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func, desc, text
+from sqlalchemy import select, func, desc, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
@@ -103,6 +103,18 @@ async def create_alarm(
     - Bền vững n8n notification outbox
     """
     # 1. Idempotency fast check
+    dept_id = current_user.department_id if current_user.role == UserRole.OPERATOR.value else (alarm_in.source_department_id or current_user.department_id)
+    dept = await db.get(Department, dept_id) if dept_id else None
+    dept_name = dept.name if dept else 'Toàn viện'
+    location = alarm_in.source_location or dept_name
+    note = alarm_in.note or ''
+
+    def same_request(existing):
+        return (existing.created_by_user_id == current_user.id and
+                existing.alarm_type_id == alarm_in.alarm_type_id and
+                existing.source_department_id == dept_id and
+                existing.source_location == location and existing.note == note)
+
     if alarm_in.idempotency_key:
         stmt = (
             select(Alarm)
@@ -117,7 +129,7 @@ async def create_alarm(
         )
         existing = (await db.execute(stmt)).scalar_one_or_none()
         if existing:
-            if existing.created_by_user_id != current_user.id or existing.alarm_type_id != alarm_in.alarm_type_id or existing.source_location != alarm_in.source_location or existing.note != alarm_in.note:
+            if not same_request(existing):
                 raise HTTPException(status_code=409, detail='Idempotency key đã được sử dụng cho yêu cầu khác')
             return AlarmOut.model_validate(existing)
 
@@ -196,7 +208,7 @@ async def create_alarm(
             )
             existing = (await db.execute(existing_stmt)).scalar_one_or_none()
             if existing:
-                if existing.created_by_user_id != current_user.id or existing.alarm_type_id != alarm_in.alarm_type_id or existing.source_location != alarm_in.source_location or existing.note != alarm_in.note:
+                if not same_request(existing):
                     raise HTTPException(status_code=409, detail='Idempotency key đã được sử dụng cho yêu cầu khác')
                 return AlarmOut.model_validate(existing)
         raise HTTPException(status_code=409, detail="Yêu cầu kích hoạt trùng lặp")
@@ -315,7 +327,8 @@ async def cancel_alarm(
     Hủy báo động (chỉ dùng khi phát nhầm).
     Phát sự kiện riêng ALARM_CANCELLED qua WebSocket.
     """
-    alarm = await db.get(Alarm, alarm_id)
+    await expire_alarms(db)
+    alarm = (await db.execute(select(Alarm).where(Alarm.id == alarm_id).with_for_update())).scalar_one_or_none()
     if not alarm:
         raise HTTPException(status_code=404, detail="Không tìm thấy báo động")
 
@@ -325,8 +338,11 @@ async def cancel_alarm(
     now = datetime.now(timezone.utc)
     if alarm.status == AlarmStatus.CANCELLED.value:
         return await get_alarm(alarm_id, db, current_user)
-    alarm.status = AlarmStatus.CANCELLED.value
-    alarm.cancelled_at = now
+    if alarm.status != AlarmStatus.ACTIVE.value:
+        raise HTTPException(status_code=409, detail='Báo động đã hết hiệu lực, không thể hủy')
+    changed = await db.execute(update(Alarm).where(Alarm.id == alarm_id, Alarm.status == 'ACTIVE').values(status='CANCELLED', cancelled_at=now))
+    if changed.rowcount != 1:
+        raise HTTPException(status_code=409, detail='Trạng thái báo động đã thay đổi')
 
     cancel_event = AlarmEvent(
         alarm_id=alarm.id,
@@ -340,17 +356,7 @@ async def cancel_alarm(
     await db.commit()
 
     # Broadcast distinct cancellation event over WebSocket
-    cancel_payload = {
-        "type": "ALARM_CANCELLED",
-        "event": "ALARM_CANCELLED",
-        "alarm_id": alarm.id,
-        "status": AlarmStatus.CANCELLED.value,
-        "cancelled_at": now.isoformat()
-    }
-    await manager.broadcast_to_dashboards(cancel_payload)
-    targets = (await db.execute(select(Station.station_code).join(AlarmStationState).where(AlarmStationState.alarm_id == alarm.id))).scalars().all()
-    for code in targets:
-        await manager.send_to_station(code, cancel_payload)
+    await broadcast_terminal_alarm(db, alarm.id, 'CANCELLED', now)
 
     res_stmt = (
         select(Alarm)

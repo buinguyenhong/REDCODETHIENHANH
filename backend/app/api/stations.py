@@ -127,6 +127,9 @@ async def register_station(
 
     await db.commit()
     await db.refresh(station)
+    old_socket = manager.active_stations.get(station.station_code)
+    if old_socket:
+        await old_socket.close(code=1008, reason='Station credential rotated')
 
     if reg.receiver_group_ids:
         await db.execute(
@@ -210,7 +213,6 @@ async def get_station_active_alarms(
     AUTHENTICATED: Must supply valid device token for this specific station.
     Returns undismissed active alarms in FIFO order (by server_sequence).
     """
-    await expire_alarms(db)
     stmt = (
         select(Station)
         .options(selectinload(Station.receiver_groups))
@@ -224,6 +226,8 @@ async def get_station_active_alarms(
     device_token = x_station_token or token
     if not device_token or hash_device_token(device_token) != station.device_token_hash:
         raise HTTPException(status_code=401, detail="Xác thực trạm không hợp lệ")
+
+    await expire_alarms(db)
 
     target_ids = set((await db.execute(select(AlarmStationState.alarm_id).where(AlarmStationState.station_id == station.id))).scalars().all())
 
@@ -255,27 +259,7 @@ async def get_station_active_alarms(
         if a.id not in target_ids:
             continue
 
-        # Update or create AlarmStationState to DELIVERED/DISPLAYED
-        st_state_stmt = select(AlarmStationState).where(
-            AlarmStationState.alarm_id == a.id,
-            AlarmStationState.station_id == station.id
-        )
-        st_state = (await db.execute(st_state_stmt)).scalar_one_or_none()
-        if st_state:
-            if st_state.state == StationAlarmStateEnum.PENDING.value:
-                st_state.state = StationAlarmStateEnum.PENDING.value
-                st_state.updated_at = now
-        else:
-            db.add(AlarmStationState(
-                alarm_id=a.id,
-                station_id=station.id,
-                state=StationAlarmStateEnum.DISPLAYED.value,
-                received_at=now,
-                displayed_at=now,
-                created_at=now,
-                updated_at=now
-            ))
-
+        # A sync response is not a client ACK; preserve presentation state.
         dept_name = a.source_department.name if a.source_department else "Toàn viện"
         result.append({
             "alarm_id": a.id,
@@ -328,7 +312,7 @@ async def dismiss_station_alarm(
     alarm_stmt = (
         select(Alarm)
         .options(selectinload(Alarm.alarm_type))
-        .where(Alarm.id == dismiss_data.alarm_id)
+        .where(Alarm.id == dismiss_data.alarm_id).with_for_update()
     )
     alarm = (await db.execute(alarm_stmt)).scalar_one_or_none()
     if not alarm:
@@ -346,13 +330,15 @@ async def dismiss_station_alarm(
         AlarmStationState.alarm_id == alarm.id,
         AlarmStationState.station_id == station.id
     )
-    st_state = (await db.execute(st_state_stmt)).scalar_one_or_none()
+    st_state = (await db.execute(st_state_stmt.with_for_update())).scalar_one_or_none()
     if st_state:
         if st_state.state == StationAlarmStateEnum.DISMISSED.value:
             return {'status': 'dismissed_locally', 'alarm_id': alarm.id, 'station_code': station.station_code}
-        st_state.state = StationAlarmStateEnum.DISMISSED.value
-        st_state.dismissed_at = now
-        st_state.updated_at = now
+        changed = await db.execute(update(AlarmStationState).where(
+            AlarmStationState.id == st_state.id, AlarmStationState.state != 'DISMISSED'
+        ).values(state='DISMISSED', dismissed_at=now, updated_at=now))
+        if changed.rowcount != 1:
+            return {'status': 'dismissed_locally', 'alarm_id': alarm.id, 'station_code': station.station_code}
     else:
         st_state = AlarmStationState(
             alarm_id=alarm.id,

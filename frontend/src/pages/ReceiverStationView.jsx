@@ -6,7 +6,7 @@ import { api } from '../api/client';
 
 export default function ReceiverStationView() {
   const { user } = useAuth();
-  const { stationConfig, saveStationConfig, isConnected, audioReady, unlockAudio, testDisplay, testConnection, currentAlarm } = useWebSocket();
+  const { stationConfig, saveStationConfig, isConnected, audioReady, audioError, unlockAudio, testDisplay, testConnection, currentAlarm } = useWebSocket();
   const [stations, setStations] = useState([]);
   const [selected, setSelected] = useState('');
   const [message, setMessage] = useState('');
@@ -45,6 +45,7 @@ export default function ReceiverStationView() {
         {user?.role === 'ADMIN' && stationConfig && <button className="underline" onClick={() => setChangeDevice(!changeDevice)}>Đổi / xác nhận lại trạm</button>}
       </section>
       {message && <p role="status" className="border-l-4 border-slate-600 bg-white p-4">{message}</p>}
+      {audioError && <p role="alert" className="border-l-4 border-red-700 bg-white p-4">Lỗi âm thanh: {audioError}. Kiểm tra loa/quyền trình duyệt và thử bật âm thanh lại.</p>}
     </div>
   </div>;
 }

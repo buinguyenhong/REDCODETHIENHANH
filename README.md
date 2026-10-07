@@ -25,6 +25,10 @@ Hệ thống cảnh báo trên mạng LAN: **FastAPI + React/Vite + Nginx + Post
 - PostgreSQL lưu alarm, immutable target/station states, configuration, audit và `notification_outbox`; Alembic quản lý schema.
 - Alarm/station states/CREATED audit/outbox được ghi trong một transaction. Idempotency chống trùng khi retry; API effective permissions kiểm tra quyền ở backend.
 - Outbox có retry/backoff và lease recovery; n8n không nằm trong critical path của alarm.
+- Station ACK lifecycle: `PENDING → DELIVERED → DISPLAYED → AUDIO_STARTED → AUDIO_COMPLETED`; local `DISMISSED` terminal. `AUDIO_FAILED → FAILED` giữ lỗi; successful retry có thể `FAILED → AUDIO_STARTED`. ACK cũ/lặp không làm lùi state hoặc ghi audit lặp. Sync không giả received/display/audio ACK.
+- Global lifecycle chỉ `ACTIVE → CANCELLED` hoặc `ACTIVE → EXPIRED`, không chuyển giữa hai terminal status. Cancel/expiry broadcast tới dashboard và target stations; không gửi n8n kết thúc.
+- Permission chỉ lưu ở `department_alarm_permissions`. API `allowed_department_ids` là projection tương thích, không còn cột JSON. Migration `20261007_permissions` nhập legacy grants hợp lệ chỉ khi chưa có normalized grant/denial; normalized denial được giữ.
+- Reports dùng khoảng half-open theo giờ bệnh viện: từ ngày đầu 00:00 đến **trước** 00:00 ngày sau ngày cuối, quy đổi UTC. Datetime không offset được hiểu theo Asia/Ho_Chi_Minh.
 - WebSocket manager còn in-memory: triển khai **một API worker**. Tải thực và crash/reconnect vẫn cần nghiệm thu.
 
 ## Triển khai Docker
@@ -89,7 +93,9 @@ npm test
 npm run build
 ```
 
-Kết quả gần nhất của đợt implementation: **35 backend tests passed**, **3 JS audio tests passed**, frontend build **PASS**. Test tải 50/100 hiện có dùng mock socket, không chứng minh acceptance WebSocket/LAN thật. Lịch sử commands và bằng chứng trong changelog; đợt hợp nhất tài liệu chỉ kiểm tra tài liệu/diff.
+Suite có regression lifecycle, permission, date boundary, migration và `test_live_transport.py` chạy server Uvicorn/socket TCP thật trên DB riêng. Các benchmark cũ dùng mock không chứng minh tải LAN. `LIVE_TEST_DATABASE_URL` có thể chỉ định PostgreSQL **test riêng** cho live test; mặc định live test dùng SQLite tạm. Live test ACK mô phỏng protocol, không chứng minh loa/browser phát audio thật.
+
+`.github/workflows/ci.yml` chạy backend pytest/migration, live transport trên PostgreSQL 16 test service, frontend test/build và Docker image build. Xem trạng thái run trên GitHub Actions; workflow không deploy production. Không có lint/typecheck script trong package hiện tại.
 
 ## Kiosk audio và trạng thái nghiệm thu
 

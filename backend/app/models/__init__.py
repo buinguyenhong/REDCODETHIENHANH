@@ -138,7 +138,6 @@ class AlarmType(Base):
     display_color: Mapped[str] = mapped_column(String(20), default="#dc2626", nullable=False)
     receiver_group_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("receiver_groups.id"), nullable=True)
     audio_sequence: Mapped[Optional[Any]] = mapped_column(JSON, default=list)
-    allowed_department_ids: Mapped[Optional[Any]] = mapped_column(JSON, default=list) # Kept for backward compatibility
     repeat_count: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     repeat_interval_ms: Mapped[int] = mapped_column(Integer, default=1500, nullable=False)
     validity_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
@@ -147,7 +146,12 @@ class AlarmType(Base):
 
     receiver_group: Mapped[Optional["ReceiverGroup"]] = relationship("ReceiverGroup", back_populates="alarm_types")
     alarms: Mapped[List["Alarm"]] = relationship("Alarm", back_populates="alarm_type")
-    department_permissions: Mapped[List["DepartmentAlarmPermission"]] = relationship("DepartmentAlarmPermission", back_populates="alarm_type", cascade="all, delete-orphan")
+    department_permissions: Mapped[List["DepartmentAlarmPermission"]] = relationship("DepartmentAlarmPermission", back_populates="alarm_type", cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def allowed_department_ids(self):
+        """Compatibility API projection; not a stored permission source."""
+        return [p.department_id for p in self.department_permissions if p.enabled]
 
 class DepartmentAlarmPermission(Base):
     __tablename__ = "department_alarm_permissions"

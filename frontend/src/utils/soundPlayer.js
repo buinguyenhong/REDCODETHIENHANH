@@ -13,9 +13,6 @@ class SoundPlayer {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (AudioCtx && !this.audioContext) {
         this.audioContext = new AudioCtx();
-        if (this.audioContext.state === 'running') {
-          this.isAudioReady = true;
-        }
       }
     } catch (e) {
       console.warn('AudioContext init error:', e);
@@ -32,11 +29,9 @@ class SoundPlayer {
       }
     }
 
-    // Play a brief silent HTML Audio to unlock browser autoplay policy
+    // Audible test; production does not seed the demo WAV file.
     try {
-      const testAudio = new Audio('/assets/audio/red_code_1.wav');
-      await testAudio.play();
-      await new Promise((resolve, reject) => { testAudio.onended = resolve; testAudio.onerror = () => reject(new Error('Audio test failed')); });
+      await this.playTestTone();
       this.isAudioReady = true;
       return true;
     } catch (err) {
@@ -50,7 +45,6 @@ class SoundPlayer {
     this.stop();
     const generation = this.generation;
     if (!audioUrls || audioUrls.length === 0) {
-      if (onComplete) onComplete();
       return;
     }
 
@@ -82,8 +76,8 @@ class SoundPlayer {
         this.currentAudio = audio;
         audio.onended = () => { if (generation === this.generation) playNextFile(); };
         const fail = (err) => {
-          if (generation !== this.generation) return;
-          this.isPlaying = false;
+          if (generation !== this.generation || !this.isPlaying) return;
+          this.stop();
           this.isAudioReady = false;
           if (onError) onError(err);
         };

@@ -60,7 +60,7 @@ async def test_activation_cancel_and_history():
 def test_vietnam_day_boundaries():
     start, end = parse_date_range('2026-10-06', '2026-10-06')
     assert start == datetime(2026, 10, 5, 17, tzinfo=timezone.utc)
-    assert end == datetime(2026, 10, 6, 16, 59, 59, 999999, tzinfo=timezone.utc)
+    assert end == datetime(2026, 10, 6, 17, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio

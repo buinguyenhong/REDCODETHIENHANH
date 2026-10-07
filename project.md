@@ -1689,3 +1689,12 @@ Mục này ưu tiên hơn mọi nội dung baseline hoặc yêu cầu review cũ
 ## Phần chưa nghiệm thu
 
 Test API SQLite, unit audio và build không đóng acceptance mạng/loa. Các mục còn PARTIAL/BLOCKED gồm PostgreSQL fresh/upgrade/adoption, Docker/Nginx/restart/restore, concurrent browser FIFO/reconnect, outbox multi-worker/admin controls, cấu hình/audit/report còn thiếu và PC/Android unattended audio. Ma trận chi tiết được duy trì trong `agent_changelog.md`.
+
+# 47. Chuẩn hóa lifecycle và permission — 2026-10-07
+
+- Global chỉ ACTIVE → CANCELLED hoặc ACTIVE → EXPIRED. Terminal states không đổi qua nhau. Broadcast terminal event ở mọi đường expiry (API/monitor), chỉ tới target snapshot và dashboard; giữ audit, không enqueue n8n kết thúc.
+- Station RECEIVED đổi PENDING → DELIVERED; DISPLAYED cần DELIVERED; AUDIO_STARTED cần DISPLAYED hoặc explicit retry FAILED; AUDIO_COMPLETED cần AUDIO_STARTED. DISMISSED local terminal, global vẫn không đổi. ACK idempotent/monotonic; không infer timestamps từ sync hoặc socket send.
+- AUDIO_FAILED giữ server timestamp/error; không có successful AUDIO_STARTED trước khi browser play resolve. Retry giữ lịch sử failure. Build/protocol ACK không nghiệm thu loa thật.
+- Permission source duy nhất department_alarm_permissions. allowed_department_ids chỉ là API projection/command tương thích; bỏ cột JSON sau import valid legacy pairs còn thiếu, normalized grant/denial ưu tiên.
+- Report khoảng [start, next hospital midnight) với timezone Asia/Ho_Chi_Minh, datetime có offset quy đổi UTC, naive datetime là giờ bệnh viện.
+- Production forward-only Alembic upgrade head; rollback bằng backup đã kiểm chứng, không downgrade giả.

@@ -17,8 +17,8 @@ router = APIRouter(prefix="/reports", tags=["Reports"])
 
 def parse_date_range(from_date_str: Optional[str], to_date_str: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
     """
-    Parses start and end dates with full-day coverage (Section 27).
-    If to_date is YYYY-MM-DD, encompasses up to 23:59:59.999999.
+    Half-open [start, end): date-only end is next hospital midnight.
+    Naive datetimes are hospital local time; offset datetimes are normalized UTC.
     """
     start_dt = None
     end_dt = None
@@ -31,7 +31,8 @@ def parse_date_range(from_date_str: Optional[str], to_date_str: Optional[str]) -
         if len(clean_str) <= 10:
             dt = dt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')).astimezone(timezone.utc)
         elif dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=ZoneInfo('Asia/Ho_Chi_Minh'))
+        dt = dt.astimezone(timezone.utc)
         start_dt = dt
 
     if to_date_str and to_date_str.strip():
@@ -41,12 +42,13 @@ def parse_date_range(from_date_str: Optional[str], to_date_str: Optional[str]) -
         except ValueError:
             raise HTTPException(status_code=422, detail='Ngày không hợp lệ')
         if len(clean_str) <= 10:
-            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')).astimezone(timezone.utc)
+            dt = (dt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')) + timedelta(days=1)).astimezone(timezone.utc)
         elif dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=ZoneInfo('Asia/Ho_Chi_Minh'))
+        dt = dt.astimezone(timezone.utc)
         end_dt = dt
 
-    if start_dt and end_dt and start_dt > end_dt:
+    if start_dt and end_dt and start_dt >= end_dt:
         raise HTTPException(status_code=422, detail='Khoảng ngày không hợp lệ')
     return start_dt, end_dt
 
@@ -66,7 +68,7 @@ async def get_summary_report(
     if start_dt:
         stmt = stmt.where(Alarm.created_at >= start_dt)
     if end_dt:
-        stmt = stmt.where(Alarm.created_at <= end_dt)
+        stmt = stmt.where(Alarm.created_at < end_dt)
 
     alarms = (await db.execute(stmt)).scalars().all()
 
@@ -92,7 +94,7 @@ async def get_summary_report(
     if start_dt:
         offline_stmt = offline_stmt.where(SystemEvent.created_at >= start_dt)
     if end_dt:
-        offline_stmt = offline_stmt.where(SystemEvent.created_at <= end_dt)
+        offline_stmt = offline_stmt.where(SystemEvent.created_at < end_dt)
 
     offline_count = (await db.execute(offline_stmt)).scalar() or 0
 
@@ -128,7 +130,7 @@ async def export_alarms_xlsx(
     if start_dt:
         stmt = stmt.where(Alarm.created_at >= start_dt)
     if end_dt:
-        stmt = stmt.where(Alarm.created_at <= end_dt)
+        stmt = stmt.where(Alarm.created_at < end_dt)
 
     alarms = (await db.execute(stmt)).scalars().all()
 

@@ -2,7 +2,7 @@ import { AlertOctagon, Volume2, CheckCircle2, ChevronRight, Clock, MapPin } from
 import { useWebSocket } from '../context/WebSocketContext';
 
 export default function AlarmOverlay() {
-  const { currentAlarm: realAlarm, displayTest, closeDisplayTest, activeAlarms, dismissCurrentAlarm, audioReady, unlockAudio } = useWebSocket();
+  const { currentAlarm: realAlarm, displayTest, closeDisplayTest, activeAlarms, dismissCurrentAlarm, audioReady, audioError, unlockAudio } = useWebSocket();
   const currentAlarm = realAlarm || displayTest;
 
   if (!currentAlarm) return null;
@@ -45,6 +45,8 @@ export default function AlarmOverlay() {
           </div>
         )}
       </div>
+
+      {audioError && !currentAlarm.isTest && <p role="alert" className="font-bold border-2 border-yellow-300 p-3">Lỗi âm thanh: {audioError}. Kiểm tra loa và chạm để thử bật còi lại.</p>}
 
       {/* Center Body: Massive Alarm Typography */}
       <div className="flex-1 flex flex-col justify-center items-center text-center my-6 max-w-5xl mx-auto w-full">

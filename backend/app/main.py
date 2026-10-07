@@ -20,6 +20,7 @@ from app.models import (
     AlarmStationState, StationAlarmStateEnum, Alarm, AlarmStatus, SystemEvent
 )
 from app.core.n8n_outbox import outbox_worker
+from app.core.station_lifecycle import acknowledge_station_event
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,14 +34,18 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.AUDIO_UPLOAD_DIR, exist_ok=True)
     
     # 1. Create DB tables if not present
-    if settings.ENVIRONMENT != 'production':
+    if settings.ENVIRONMENT in ('development', 'test'):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as session:
+        previously_online = (await session.execute(select(Station).where(Station.websocket_connected == True))).scalars().all()
+        for station in previously_online:
+            session.add(SystemEvent(station_id=station.id, event_type='DEVICE_DISCONNECTED', severity='WARNING',
+                message='Server startup reconciled previous connection', event_metadata={'reason': 'server_restart'}, created_at=datetime.now(timezone.utc)))
         await session.execute(update(Station).values(websocket_connected=False, status=StationStatus.OFFLINE.value))
         await session.execute(update(User).where(User.role == 'VIEWER').values(enabled=False))
         await session.commit()
-    logger.info("Database schema synchronized.")
+    logger.info("Database initialized; production schema is managed by Alembic.")
 
     # 2. Seed default data if database is fresh
     from app.seed import seed_database
@@ -144,6 +149,11 @@ async def websocket_endpoint(
                 data_text = await websocket.receive_text()
                 try:
                     msg = json.loads(data_text)
+                    if not isinstance(msg, dict):
+                        continue
+                    if manager.active_stations.get(station_code) is not websocket:
+                        await websocket.close(code=1008)
+                        return
                     msg_type = msg.get("type")
 
                     if msg_type == "HEARTBEAT":
@@ -170,87 +180,13 @@ async def websocket_endpoint(
                         event_type = msg.get("event_type")
                         alarm_id = msg.get("alarm_id")
                         metadata = msg.get("metadata", {})
-                        if event_type and alarm_id:
-                            now = datetime.now(timezone.utc)
+                        if isinstance(alarm_id, int) and not isinstance(alarm_id, bool):
                             async with AsyncSessionLocal() as session:
                                 st = (await session.execute(
                                     select(Station.id).where(Station.station_code == station_code)
                                 )).scalar_one_or_none()
-
-                                # 1. Update alarm_station_states table
-                                target = (await session.execute(select(AlarmStationState).where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st))).scalar_one_or_none()
-                                alarm = await session.get(Alarm, alarm_id)
-                                if alarm and alarm.expires_at:
-                                    expiry = alarm.expires_at.replace(tzinfo=timezone.utc) if alarm.expires_at.tzinfo is None else alarm.expires_at
-                                    if expiry <= now:
-                                        continue
-                                if not target or not alarm or alarm.status != AlarmStatus.ACTIVE.value or manager.active_stations.get(station_code) is not websocket or target.state == StationAlarmStateEnum.DISMISSED.value or event_type not in ['RECEIVED', 'DISPLAYED', 'AUDIO_STARTED', 'AUDIO_COMPLETED', 'AUDIO_FAILED']:
-                                    continue
-                                rank = {'PENDING': 0, 'DELIVERED': 1, 'DISPLAYED': 2, 'AUDIO_STARTED': 3, 'AUDIO_COMPLETED': 4, 'FAILED': 5}
-                                incoming = {'RECEIVED': 1, 'DISPLAYED': 2, 'AUDIO_STARTED': 3, 'AUDIO_COMPLETED': 4, 'AUDIO_FAILED': 5}[event_type]
-                                if event_type != 'RECEIVED' and incoming <= rank.get(target.state, 0):
-                                    # A deliberate successful retry may recover FAILED audio.
-                                    if not (target.state == 'FAILED' and event_type == 'AUDIO_STARTED'):
-                                        continue
-                                if st:
-                                    if event_type == 'RECEIVED':
-                                        if target.received_at is None:
-                                            target.received_at = now
-                                        else:
-                                            continue
-                                    elif event_type == "DISPLAYED":
-                                        await session.execute(
-                                            update(AlarmStationState)
-                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
-                                            .values(
-                                                state=StationAlarmStateEnum.DISPLAYED.value,
-                                                displayed_at=now,
-                                                updated_at=now
-                                            )
-                                        )
-                                    elif event_type == "AUDIO_STARTED":
-                                        await session.execute(
-                                            update(AlarmStationState)
-                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
-                                            .values(
-                                                state=StationAlarmStateEnum.AUDIO_STARTED.value,
-                                                audio_started_at=now,
-                                                updated_at=now
-                                            )
-                                        )
-                                    elif event_type == "AUDIO_COMPLETED":
-                                        await session.execute(
-                                            update(AlarmStationState)
-                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
-                                            .values(
-                                                state=StationAlarmStateEnum.AUDIO_COMPLETED.value,
-                                                audio_completed_at=now,
-                                                updated_at=now
-                                            )
-                                        )
-                                    elif event_type == "AUDIO_FAILED":
-                                        await session.execute(
-                                            update(AlarmStationState)
-                                            .where(AlarmStationState.alarm_id == alarm_id, AlarmStationState.station_id == st)
-                                            .values(
-                                                state=StationAlarmStateEnum.FAILED.value,
-                                                failed_at=now,
-                                                error_message=str(metadata.get("error", "Audio playback error")),
-                                                updated_at=now
-                                            )
-                                        )
-
-                                # 2. Append audit trail event
-                                ev = AlarmEvent(
-                                    alarm_id=alarm_id,
-                                    station_id=st,
-                                    event_type=event_type,
-                                    event_time=now,
-                                    event_metadata=metadata,
-                                    created_at=now
-                                )
-                                session.add(ev)
-                                await session.commit()
+                                accepted = await acknowledge_station_event(session, alarm_id, st, event_type, metadata)
+                            await websocket.send_text(json.dumps({'type': 'STATION_EVENT_ACK', 'alarm_id': alarm_id, 'event_type': event_type, 'accepted': accepted}))
 
                     elif msg_type == "PING":
                         await websocket.send_text(json.dumps({"type": "PONG", "request_id": msg.get('request_id'), "server_time": datetime.now(timezone.utc).isoformat()}))

@@ -43,3 +43,31 @@ test('remote audio test cannot interrupt active alarm', async () => {
   assert.equal(soundPlayer.isPlaying, true);
   soundPlayer.stop();
 });
+
+test('start waits for play resolve; completion waits for last file ended', async () => {
+  let resolvePlay, started = 0, completed = 0;
+  globalThis.Audio.prototype.play = () => new Promise(resolve => { resolvePlay = resolve; });
+  soundPlayer.playAlarmSequence(['/assets/audio/a.wav', '/assets/audio/b.wav'], 1, 0, () => started++, () => completed++);
+  assert.equal(started, 0);
+  resolvePlay();
+  await Promise.resolve();
+  assert.equal(started, 1);
+  assert.equal(completed, 0);
+  audios[0].onended();
+  resolvePlay();
+  await Promise.resolve();
+  assert.equal(started, 1);
+  audios[1].onended();
+  assert.equal(completed, 1);
+});
+
+test('late ended or repeated errors after failure cannot complete audio', async () => {
+  let completed = 0, failed = 0;
+  globalThis.Audio.prototype.play = () => Promise.reject(new Error('blocked'));
+  soundPlayer.playAlarmSequence(['/assets/audio/a.wav'], 1, 0, null, () => completed++, () => failed++);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  audios[0].onended();
+  audios[0].onerror();
+  assert.equal(completed, 0);
+  assert.equal(failed, 1);
+});

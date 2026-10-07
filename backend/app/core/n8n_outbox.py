@@ -43,7 +43,8 @@ class OutboxWorker:
         now = datetime.now(timezone.utc)
         now_naive = now.replace(tzinfo=None)
         async with AsyncSessionLocal() as session:
-            await session.execute(update(NotificationOutbox).where(NotificationOutbox.status == OutboxStatus.PROCESSING.value, or_(NotificationOutbox.locked_at == None, NotificationOutbox.locked_at < now - timedelta(minutes=5))).values(status=OutboxStatus.FAILED.value))
+            await session.execute(update(NotificationOutbox).where(NotificationOutbox.status == OutboxStatus.PROCESSING.value, or_(NotificationOutbox.locked_at == None, NotificationOutbox.locked_at < now - timedelta(minutes=5))).values(status=OutboxStatus.FAILED.value, locked_at=None))
+            await session.commit()
             stmt = (
                 select(NotificationOutbox)
                 .where(
@@ -72,21 +73,25 @@ class OutboxWorker:
                 return
 
             for item in items:
-                item.status = OutboxStatus.PROCESSING.value
-                item.locked_at = now
-            await session.commit()
-
-            for item in items:
                 await self._send_item(item.id)
 
     async def _send_item(self, item_id: int):
         async with AsyncSessionLocal() as session:
-            item = await session.get(NotificationOutbox, item_id)
-            if not item:
-                return
-
             now = datetime.now(timezone.utc)
-            item.attempt_count += 1
+            # Claim one job immediately before I/O. CAS prevents two workers
+            # claiming the same job; increment persisted before a possible crash.
+            claimed = await session.execute(update(NotificationOutbox).where(
+                NotificationOutbox.id == item_id,
+                NotificationOutbox.status.in_(['PENDING', 'FAILED']),
+                NotificationOutbox.attempt_count < settings.N8N_MAX_RETRIES,
+                or_(NotificationOutbox.next_attempt_at == None, NotificationOutbox.next_attempt_at <= now)
+            ).values(status='PROCESSING', locked_at=now,
+                     attempt_count=NotificationOutbox.attempt_count + 1))
+            await session.commit()
+            if claimed.rowcount != 1:
+                return
+            item = await session.get(NotificationOutbox, item_id)
+            lease = item.locked_at
             success = False
             last_err = ""
 
@@ -100,10 +105,17 @@ class OutboxWorker:
             except Exception as e:
                 last_err = str(e)[:300]
 
+            # Only the lease owner can finish; another worker may reclaim a
+            # genuinely stale job. n8n must dedup the stable idempotency key.
+            await session.refresh(item)
+            if item.status != 'PROCESSING' or item.locked_at != lease:
+                return
+            item.locked_at = None
             if success:
                 item.status = OutboxStatus.SENT.value
                 item.sent_at = now
                 item.last_error = None
+                item.next_attempt_at = None
                 # Audit log
                 session.add(SystemEvent(
                     station_id=None,

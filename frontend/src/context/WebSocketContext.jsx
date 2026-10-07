@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useRef, useCallback } f
 import { soundPlayer } from '../utils/soundPlayer';
 import { api } from '../api/client';
 import { useAuth } from './AuthContext';
+import { mergeAlarmQueue } from '../utils/alarmQueue';
 
 const WebSocketContext = createContext(null);
 
@@ -10,6 +11,7 @@ export function WebSocketProvider({ children }) {
   const [isConnected, setIsConnected] = useState(false);
   const [activeAlarms, setActiveAlarms] = useState([]); // FIFO queue of active alarms
   const [audioReady, setAudioReady] = useState(false);
+  const [audioError, setAudioError] = useState(null);
   const [displayTest, setDisplayTest] = useState(null);
   const connectionTestsRef = useRef(new Map());
   const serverOffsetRef = useRef(0);
@@ -29,10 +31,15 @@ export function WebSocketProvider({ children }) {
   const disposedRef = useRef(false);
   const lastHeartbeatAckRef = useRef(Date.now());
   const [audioRetry, setAudioRetry] = useState(0);
+  const syncRetryRef = useRef(null);
   const dismissedRef = useRef(new Set(JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]').map(item => item.alarm_id)));
-  const ordered = (alarms) => [...new Map(alarms.filter(a => !dismissedRef.current.has(a.alarm_id) && (!a.expires_at || Date.parse(a.expires_at) > Date.now() + serverOffsetRef.current)).map(a => [a.alarm_id, a])).values()].sort((a,b) => a.server_sequence - b.server_sequence);
+  const ordered = (alarms) => mergeAlarmQueue([], alarms, dismissedRef.current, Date.now() + serverOffsetRef.current);
 
   const saveStationConfig = (config) => {
+    soundPlayer.stop();
+    dismissedRef.current = new Set();
+    localStorage.removeItem('redcode_pending_dismiss');
+    setAudioError(null);
     setActiveAlarms([]);
     setStationConfig(config);
     if (config) {
@@ -52,11 +59,19 @@ export function WebSocketProvider({ children }) {
       try { await api.dismissStationAlarm(item); } catch (_) { remaining.push(item); }
     }
     localStorage.setItem('redcode_pending_dismiss', JSON.stringify(remaining));
-    const alarms = await api.getStationActiveAlarms(stationConfig.station_code, stationConfig.device_token);
+    let alarms;
+    try {
+      alarms = await api.getStationActiveAlarms(stationConfig.station_code, stationConfig.device_token);
+    } catch (error) {
+      if (!disposedRef.current && wsRef.current === socket) {
+        clearTimeout(syncRetryRef.current);
+        syncRetryRef.current = setTimeout(() => synchronize().catch(() => {}), 2000);
+      }
+      throw error;
+    }
     if (alarms[0]?.server_time) serverOffsetRef.current = Date.parse(alarms[0].server_time) - Date.now();
     if (disposedRef.current || wsRef.current !== socket) return;
-    const ids = new Set(alarms.map(a => a.alarm_id));
-    setActiveAlarms(prev => ordered([...prev.filter(a => ids.has(a.alarm_id) || a.localReceivedAt >= startedAt), ...alarms]));
+    setActiveAlarms(prev => mergeAlarmQueue(prev, alarms, dismissedRef.current, Date.now() + serverOffsetRef.current, startedAt));
     for (const alarm of alarms) {
       if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'RECEIVED', alarm_id: alarm.alarm_id }));
     }
@@ -180,6 +195,7 @@ export function WebSocketProvider({ children }) {
 
       case 'ALARM_CANCELLED':
       case 'ALARM_EXPIRED':
+        setRecentStatusEvents(prev => [msg, ...prev.slice(0, 20)]);
         if (msg.alarm_id) {
           dismissedRef.current.add(msg.alarm_id);
           setActiveAlarms((prev) => prev.filter((a) => a.alarm_id !== msg.alarm_id));
@@ -224,6 +240,7 @@ export function WebSocketProvider({ children }) {
   useEffect(() => {
     if (activeAlarms.length > 0) {
       const currentAlarm = activeAlarms[0];
+      setAudioError(null);
       if (wsRef.current?.readyState === WebSocket.OPEN && stationConfig?.station_code) wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'DISPLAYED', alarm_id: currentAlarm.alarm_id }));
       if (currentAlarm.audio_sequence && currentAlarm.audio_sequence.length > 0) {
         soundPlayer.playAlarmSequence(
@@ -233,6 +250,7 @@ export function WebSocketProvider({ children }) {
           () => {
             // onStart: Send AUDIO_STARTED audit event
             setAudioReady(true);
+            setAudioError(null);
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
               wsRef.current.send(JSON.stringify({
                 type: 'STATION_EVENT',
@@ -256,6 +274,7 @@ export function WebSocketProvider({ children }) {
           (err) => {
             // onError: Send AUDIO_FAILED audit event and update UI readiness
             setAudioReady(false);
+            setAudioError(err?.message || 'Không phát được âm thanh');
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
               wsRef.current.send(JSON.stringify({
                 type: 'STATION_EVENT',
@@ -324,6 +343,7 @@ export function WebSocketProvider({ children }) {
       if (wsRef.current) wsRef.current.close();
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+      clearTimeout(syncRetryRef.current);
     };
   }, [connect]);
 
@@ -348,6 +368,7 @@ export function WebSocketProvider({ children }) {
         testConnection,
         dismissCurrentAlarm,
         audioReady,
+        audioError,
         unlockAudio,
         stationConfig,
         saveStationConfig,

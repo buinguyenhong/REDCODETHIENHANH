@@ -23,6 +23,4 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index('ix_alarms_expires_at', table_name='alarms')
-    op.drop_column('alarms', 'expires_at')
-    op.drop_column('alarm_types', 'validity_seconds')
+    raise RuntimeError('Forward-only production migration; restore a verified backup.')

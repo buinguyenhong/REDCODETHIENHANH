@@ -6,7 +6,7 @@ import { Bell, Clock, MapPin, CheckCircle, ShieldAlert, History, XCircle, AlertC
 
 export default function OperatorDashboard() {
   const { user } = useAuth();
-  const { isConnected } = useWebSocket();
+  const { isConnected, recentStatusEvents } = useWebSocket();
   const [alarmTypes, setAlarmTypes] = useState([]);
   const [selectedType, setSelectedType] = useState(null);
   const [location, setLocation] = useState('');
@@ -22,6 +22,10 @@ export default function OperatorDashboard() {
     const interval = setInterval(loadRecentAlarms, 6000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (recentStatusEvents[0]?.type === 'ALARM_CANCELLED' || recentStatusEvents[0]?.type === 'ALARM_EXPIRED') loadRecentAlarms();
+  }, [recentStatusEvents]);
 
   const isPermitted = (type) => {
     return ['ADMIN', 'OPERATOR'].includes(user?.role);

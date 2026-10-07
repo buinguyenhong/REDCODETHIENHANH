@@ -173,7 +173,7 @@ class ConnectionManager:
         if not ws:
             return False
         try:
-            await ws.send_text(json.dumps(message))
+            await asyncio.wait_for(ws.send_text(json.dumps(message)), timeout=1)
             return True
         except Exception:
             await self.disconnect_station(station_code, ws)
@@ -219,12 +219,7 @@ class ConnectionManager:
                 await asyncio.sleep(5)
                 now = datetime.now(timezone.utc)
                 async with AsyncSessionLocal() as session:
-                    expired_ids = await expire_alarms(session)
-                for alarm_id in expired_ids:
-                    message = {'type': 'ALARM_EXPIRED', 'alarm_id': alarm_id}
-                    await self.broadcast_to_dashboards(message)
-                    for code in list(self.active_stations):
-                        await self.send_to_station(code, message)
+                    await expire_alarms(session)
                 timed_out = []
 
                 async with self._lock:

@@ -6,6 +6,47 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-07 — Lifecycle, permission, recovery và CI
+
+### Thay đổi
+
+- `core/station_lifecycle.py` và WS gateway: RECEIVED chuyển PENDING → DELIVERED, predecessor guards, row lock/CAS, idempotent ACK/audit, timestamps server. DISPLAYED/audio success không được nhảy cóc; FAILED cho phép explicit successful audio retry, giữ error/history. Local dismiss khóa/CAS, không đổi global status.
+- `alarm_lifecycle.py`, alarms/WS manager: terminal ACTIVE → CANCELLED/EXPIRED với lock/CAS, expired cancel trả 409, cancellation retry idempotent. Mọi đường expiry API/monitor broadcast dashboard và target snapshot, giữ audit; không outbox end/cancel. Station sends có timeout.
+- Reports summary/offline/XLSX: half-open hospital midnight range, UTC normalization; naive datetime theo Asia/Ho_Chi_Minh.
+- Permission source duy nhất normalized table; ORM bỏ cột JSON, API field tương thích là projection. Create/update config và permissions trong cùng transaction, validate department IDs, cập nhật row có sẵn giữ identity và phản hồi mới nhất.
+- Idempotency giữ DB UNIQUE, sửa fingerprint default location/note/source department. Production vẫn dùng PostgreSQL nextval; không đổi kiến trúc sequence.
+- Outbox claim CAS từng item trước I/O, persist attempt/lease trước crash, stale reclaim commit kể cả queue không có due item, chỉ lease owner finalize; SENT xóa retry/lock. Stable Idempotency-Key at-least-once cần n8n dedup; không tuyên bố exactly-once.
+- Startup create_all chỉ development/test, production không schema mutation; startup audit disconnect cho connection tồn từ restart. Manual seed cũng guard production. Register rotate credential đóng socket cũ.
+- Frontend queue helper regression dedup/FIFO/sync race/terminal tombstone; sync HTTP lỗi retry trên connection hiện hành. Đổi station dọn pending dismiss/stop audio; hiển thị lỗi audio ở overlay và receiver. Dashboard cập nhật cancel/expiry ngay khi có event.
+- SoundPlayer chỉ onStart sau play resolve, failed session invalidate stale callbacks, không completion cho empty audio; audible unlock tone không phụ thuộc WAV demo trong production.
+- Thêm `.github/workflows/ci.yml`: pytest/Alembic, PostgreSQL 16 test service cho live transport, frontend tests/build, Docker image builds; không tự deploy.
+
+### Migration
+
+`20261007_permissions` sau `20261006_validity`: import valid legacy JSON department IDs chỉ cho normalized pairs chưa tồn tại; explicit normalized deny/grant giữ nguyên; bỏ JSON column; repair PENDING có received_at thành DELIVERED. Có regression upgrade preserving history/deny/invalid IDs. Test đổi tên `test_alembic_upgrade_and_schema_alignment`; validity downgrade từ chối theo forward-only policy.
+
+### Commands/bằng chứng thực chạy
+
+Windows/Python 3.14, DB test riêng trong thư mục temp; không đổi DB dự án/production.
+
+- `python -m alembic upgrade head`: PASS fresh SQLite đến `20261007_permissions`.
+- `python -m pytest tests -q -s -p no:cacheprovider` (PYTHONIOENCODING=utf-8): **49 passed**, 5 dependency/config warnings, 59.10s. Bao gồm upgrade/schema/DB unique, legacy migration, production no-create_all, toàn bộ auth/state/permission/date/outbox/idempotency regressions.
+- `npm test`: **8 passed**. `npm run build`: **PASS**. Package không có lint/typecheck script.
+- Live Uvicorn TCP/WebSocket test: reconnect alarm A/B + cancel offline sync exclusion, socket replacement race, process restart/active recovery, n8n connection refused; **100 real sockets × 10 alarms**, lost=0, duplicate=0, batch p50=0.069s, p95/max=0.369s. Localhost/SQLite, không qua Nginx/PostgreSQL và không đo physical audio.
+- Lượt test đầu phát hiện stale permission response/identity map và sửa update rows + populate_existing; lượt Windows console encoding cũ sửa bằng UTF-8 env; live test cleanup sửa taskkill process tree để không giữ DB handle bởi venv child interpreter. Full suite cuối PASS.
+
+### Scenario acceptance hiện tại
+
+- A/B/C: PASS API/state/transport; audio success ACK trong transport mô phỏng protocol, không nghiệm thu browser/loa.
+- D/G: PASS live disconnect/missed ACTIVE/cancel exclusion/reconnect/process restart; expiry exclusion cũng có API regression và queue tests.
+- E: PASS JS play rejection/stale callback + backend FAILED/error/no successful start regression; thiết bị thực còn pending.
+- F: PASS core live khi n8n refused, outbox retry/crash/stale recovery regression.
+- H: PASS local real TCP 100 × 10, FIFO sequential batch/no duplicate; còn Nginx/PostgreSQL/LAN/concurrent browser acceptance.
+
+### Giới hạn
+
+Docker engine không chạy (`docker info` FAIL missing dockerDesktopLinuxEngine); PostgreSQL/Nginx container build/restart/backup restore chưa chạy local. CI workflow đã tạo nhưng chưa có remote run evidence; `gh auth status` chưa đăng nhập nên chưa xác minh Actions. PC/Android/loa và browser end-to-end chưa nghiệm thu. Các phần còn PARTIAL trong lịch sử (admin outbox controls, readiness/config/audit/report completeness, legacy create_all adoption) chưa thể kết luận production-ready.
+
 ## 2026-10-06 — Hợp nhất tài liệu
 
 - Chuyển baseline thành `project.md`, bổ sung requirements sau review và quyết định mới của user, cập nhật repository/role/station/expiry/report scope.
