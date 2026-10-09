@@ -456,13 +456,13 @@
 
     <div class="verdict">
       <strong>Chưa đủ điều kiện</strong>
-      <span>3 chặn cứng chưa gỡ · 10/25 nghiệm thu chưa chạy được · 13 finding còn PARTIAL</span>
+      <span>2 chặn cứng chưa gỡ · 10/25 nghiệm thu chưa chạy được · 13 finding còn PARTIAL</span>
     </div>
   </header>
 
   <div class="stats">
     <div class="stat">
-      <span class="num is-block">3</span>
+      <span class="num is-block">2</span>
       <span class="lbl">Chặn cứng — không thể triển khai khi còn</span>
     </div>
     <div class="stat">
@@ -553,38 +553,36 @@
         <p class="action"><b>Việc cần</b>Restore drill ở môi trường riêng, ghi lại bằng chứng trước ngày triển khai.</p>
       </li>
 
-      <li class="is-block">
+      <li class="is-done">
         <div class="item-top">
-          <h3>CI chưa có bằng chứng chạy thật</h3>
-          <span class="chip block">Chặn cứng</span>
+          <h3>CI đã chạy thật trên GitHub Actions</h3>
+          <span class="chip done">Đã gỡ</span>
         </div>
         <div class="item-body">
           <p>
-            <code>.github/workflows/ci.yml</code> đã tồn tại, nhưng <code>gh auth status</code>
-            chưa đăng nhập nên chưa xác minh được Actions.
-          </p>
-          <p>
-            <strong>Cập nhật 2026-10-09:</strong> đã chạy tay đúng ba job của CI trên máy — cả ba
-            <strong>đều xanh</strong>:
+            Nhánh <code>fix/lan-field-bugs-and-test-harness</code> đã được push; GitHub Actions chạy
+            run <code>37915373273</code> trên head <code>fadb30f</code> — <strong>cả ba job đều
+            success</strong>:
           </p>
           <ul class="ticks">
-            <li>backend: <code>pytest tests -v</code> trên PostgreSQL 16.15 → <b>52 passed</b></li>
-            <li>frontend: <code>npm test</code> <b>8 passed</b>, <code>npm run build</code> <b>PASS</b></li>
-            <li>docker: <code>docker build</code> cho cả backend và Nginx <b>PASS</b></li>
+            <li>backend: <code>Create live transport database</code>, <code>alembic upgrade head</code>, <code>pytest tests -v</code> — <b>đều success</b></li>
+            <li>frontend: <code>npm ci</code>, <code>npm test</code>, <code>npm run build</code> — <b>success</b></li>
+            <li>docker: <code>docker build</code> cho cả backend và Nginx — <b>success</b></li>
           </ul>
           <p>
-            Quan trọng hơn: đã tìm và sửa <strong>hai lỗi khiến CI không thể xanh</strong> —
+            Lần chạy này chỉ có ý nghĩa vì hai lỗi chặn CI đã được sửa trong cùng đợt:
             <code>pytest tests</code> thiếu <code>pythonpath</code> nên chết ở
-            <code>ModuleNotFoundError: No module named 'app'</code>, và bộ test chưa từng chạy
-            trên PostgreSQL (chỉ SQLite), nên lỗi chỉ xuất hiện với PostgreSQL pool thật không
-            thể lộ ra. CI nay chạy trên PostgreSQL.
+            <code>ModuleNotFoundError: No module named 'app'</code> — job backend <em>chưa từng</em>
+            chạy được test nào; và bộ test chưa từng chạy trên PostgreSQL, nên lỗi chỉ xuất hiện với
+            PostgreSQL pool thật không thể lộ ra. CI nay chạy trên chính PostgreSQL.
           </p>
           <p>
-            Nhưng đây vẫn là <strong>chạy tay mô phỏng</strong>, không phải một lần chạy trên
-            Actions — nên mục này <strong>vẫn là chặn cứng</strong>.
+            Giới hạn: <code>gh</code> chưa đăng nhập nên log chi tiết của job chưa tải về được —
+            kết luận lấy từ trạng thái từng step qua GitHub API công khai, không phải từ số test in
+            trong log.
           </p>
         </div>
-        <p class="action"><b>Việc cần</b>Đăng nhập <code>gh</code>, push nhánh, xác nhận ba job đều xanh trên Actions.</p>
+        <p class="action"><b>Việc cần</b>Khi có điều kiện, chạy <code>gh auth login</code> rồi tải log job backend lưu vào hồ sơ nghiệm thu.</p>
       </li>
     </ul>
   </section>

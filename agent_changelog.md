@@ -6,9 +6,33 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-09 — Push nhánh và xác nhận CI xanh trên GitHub Actions
+
+Yêu cầu: "push code cho tôi". Đợt này **không sửa code sản phẩm lẫn hạ tầng test** — chỉ push nhánh đã commit và ghi nhận bằng chứng Actions, mục đích là gỡ chặn cứng "CI chưa có bằng chứng chạy thật" của Cổng 1 (mọi bằng chứng trước đó đều là chạy tay mô phỏng đúng lệnh CI).
+
+### Thay đổi
+
+- Không có thay đổi file. Nội dung push là các commit đã ghi ở hai entry dưới: `f778ab2` (harness test), `e4c6dee` (lỗi LAN thực địa), `fadb30f` (tài liệu).
+
+### Commands/bằng chứng thực chạy
+
+- `git push -u origin fix/lan-field-bugs-and-test-harness` → thành công; remote trả link mở PR `https://github.com/buinguyenhong/REDCODETHIENHANH/pull/new/fix/lan-field-bugs-and-test-harness`.
+- `gh auth status` → **chưa đăng nhập host GitHub nào**, nên không dùng được `gh run view`.
+- Truy vấn GitHub API công khai: `total_count: 3`, run id **`37915373273`**, name `Redcode CI`, head_branch `fix/lan-field-bugs-and-test-harness`, head_sha **`fadb30fa56cefaf2275228865874fef725ac803b`**; poll tới khi kết thúc → **`completed success`**.
+- Tải `jobs` JSON và trích conclusion từng step — **cả ba job success**:
+  - `frontend`: `npm ci`, `npm test`, `npm run build` — success
+  - `docker`: `docker build -f backend/Dockerfile -t redcode-api:ci .`, `docker build -f nginx/Dockerfile -t redcode-nginx:ci .` — success
+  - `backend`: `Create live transport database`, `alembic upgrade head`, `pytest tests -v` — success
+
+### Giới hạn
+
+- **Chưa tải được log chi tiết của job**: endpoint `/actions/jobs/<id>/logs` đòi xác thực, mà `gh` chưa đăng nhập, nên **số test in trong log Actions chưa đối chiếu được**. Kết luận ở trên lấy từ trạng thái từng step qua API công khai, không phải từ nội dung log.
+- **Chưa merge vào `main`** — nhánh vẫn đứng riêng, chờ quyết định.
+- Không thay đổi schema, không migration mới, không ảnh hưởng code sản phẩm.
+
 ## 2026-10-09 — Tổng hợp phiên: từ lỗi thực địa LAN tới hạ tầng kiểm thử
 
-Phiên này bắt đầu bằng việc chạy thử LAN nhiều thiết bị và kết thúc ở hạ tầng kiểm thử. Ba đợt dưới đây đi theo đúng trình tự đó; mục này tóm tắt mạch xử lý để đọc liền lạc.
+Phiên này bắt đầu bằng việc chạy thử LAN nhiều thiết bị và kết thúc ở hạ tầng kiểm thử. Bốn đợt dưới đây đi theo đúng trình tự đó; mục này tóm tắt mạch xử lý để đọc liền lạc.
 
 **Bối cảnh.** Chạy hệ thống ở dev mode (`uvicorn` + Vite) để nhiều thiết bị cùng LAN đăng nhập thử. Hai lỗi lộ ra chỉ vì truy cập từ máy khác qua `http://<LAN-IP>:5173`, không phải `localhost`.
 
@@ -18,7 +42,9 @@ Phiên này bắt đầu bằng việc chạy thử LAN nhiều thiết bị và
 
 **Đợt 3 — vá harness và gỡ lỗi chặn CI.** Sửa tận gốc bằng `pytest.ini` (ghim loop ở mức session) và chuyển hai test WebSocket sang uvicorn thật. Trong lúc kiểm chứng, phát hiện thêm một lỗi **có từ trước**: CI gọi `pytest tests -v`, cách gọi này không thêm thư mục hiện hành vào `sys.path` nên job backend chết ngay ở `ModuleNotFoundError: No module named 'app'` — **chưa từng chạy được test nào**. CI nay chạy trên PostgreSQL, và cả ba job đã được chạy tay xác nhận xanh.
 
-**Còn lại.** Ba chặn cứng của Cổng 1 chưa gỡ: chưa có lần chạy thật trên GitHub Actions (mới chạy tay mô phỏng), chưa chứng minh backup/restore, chưa dựng stack production bằng `docker compose up`. Chi tiết từng đợt ở ba entry dưới.
+**Đợt 4 — push và xác nhận CI trên GitHub Actions.** Push nhánh lên remote, Actions chạy run `37915373273` trên head `fadb30f`: **cả ba job success**. Chặn cứng "CI chưa có bằng chứng chạy thật" nay **đã gỡ** — xem entry trên cùng.
+
+**Còn lại.** Hai chặn cứng của Cổng 1 chưa gỡ: chưa chứng minh backup/restore, chưa dựng stack production bằng `docker compose up`. Chi tiết từng đợt ở các entry dưới.
 
 ## 2026-10-09 — Vá harness test: chạy được trên PostgreSQL và gỡ lỗi chặn CI
 
@@ -47,6 +73,7 @@ PostgreSQL 16.15 thật (container tạm, **đã xoá sau khi đo**); `metabase`
 ### Giới hạn
 
 - **Chưa có lần chạy nào trên GitHub Actions.** Toàn bộ bằng chứng trên là chạy tay mô phỏng đúng lệnh CI. Cổng 1 blocker "CI chưa có bằng chứng chạy thật" **vẫn mở**.
+  - *Cập nhật cùng ngày:* blocker này **đã gỡ** — xem entry "Push nhánh và xác nhận CI xanh trên GitHub Actions" ở đầu file.
 - Hai test WebSocket giờ khởi động một uvicorn riêng nên chậm hơn (2 test ~12s thay vì tức thời).
 - `test_live_transport.py` vẫn dùng biến `LIVE_TEST_DATABASE_URL`; nếu biến này trỏ vào cùng database với `DATABASE_URL` thì server con có thể tranh chấp với suite — CI đã tách bằng database `redcode_live`.
 - Không thay đổi schema, không có migration mới. Ảnh hưởng duy nhất tới code sản phẩm là **không có** — toàn bộ thay đổi nằm ở hạ tầng test.
