@@ -1,11 +1,12 @@
 import os
 import sys
+import json
 import asyncio
 import pytest
 import pytest_asyncio
+import websockets
 from httpx import AsyncClient, ASGITransport
 from datetime import datetime, timezone, timedelta
-from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 
 # Ensure backend path
@@ -23,6 +24,7 @@ from app.core.security import create_access_token
 from app.core.websocket_manager import manager
 from app.core.n8n_outbox import outbox_worker
 from sqlalchemy import select, func
+from tests.live_server import running_server
 
 
 @pytest_asyncio.fixture(scope="module", autouse=True)
@@ -53,24 +55,33 @@ async def test_sec_1_unauth_get_alarms_rejected():
         assert res.status_code == 401
 
 
-def test_sec_2_dashboard_ws_auth_validation():
-    """Dashboard WebSocket requires valid, active user JWT with valid role"""
-    from starlette.websockets import WebSocketDisconnect
-    with TestClient(app) as client:
-        # 1. No token -> Rejected
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect("/ws?type=dashboard"):
-                pass
+@pytest.mark.asyncio
+async def test_sec_2_dashboard_ws_auth_validation():
+    """Dashboard WebSocket requires valid, active user JWT with valid role.
 
-        # 2. Invalid token -> Rejected
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect("/ws?type=dashboard&token=invalid_garbage_token"):
-                pass
+    Chạy trên uvicorn thật: mã đóng 1008 do ASGI server quyết định, nên
+    TestClient (vốn tự dựng loop riêng và xung đột với pool PostgreSQL) không
+    thay thế được.
+    """
+    async with running_server(os.getenv('DATABASE_URL', 'sqlite+aiosqlite:///./redcode.db')) as (_, ws_url):
+        # 1. No token -> Rejected with policy-violation close code
+        async with websockets.connect(f'{ws_url}?type=dashboard') as ws:
+            with pytest.raises(websockets.exceptions.ConnectionClosed) as no_token:
+                await ws.recv()
+        assert no_token.value.rcvd.code == 1008
+        assert no_token.value.rcvd.reason
+
+        # 2. Invalid token -> Rejected with policy-violation close code
+        async with websockets.connect(f'{ws_url}?type=dashboard&token=invalid_garbage_token') as ws:
+            with pytest.raises(websockets.exceptions.ConnectionClosed) as bad_token:
+                await ws.recv()
+        assert bad_token.value.rcvd.code == 1008
+        assert bad_token.value.rcvd.reason
 
         # 3. Valid token -> Accepted
         valid_token = create_access_token(data={"sub": "admin", "role": "ADMIN", "department_id": 1})
-        with client.websocket_connect(f"/ws?type=dashboard&token={valid_token}") as ws:
-            data = ws.receive_json()
+        async with websockets.connect(f'{ws_url}?type=dashboard&token={valid_token}') as ws:
+            data = json.loads(await ws.recv())
             assert data.get("type") == "CONNECTION_ESTABLISHED"
 
 

@@ -3,6 +3,7 @@ import { soundPlayer } from '../utils/soundPlayer';
 import { api } from '../api/client';
 import { useAuth } from './AuthContext';
 import { mergeAlarmQueue } from '../utils/alarmQueue';
+import { randomId } from '../utils/uuid';
 
 const WebSocketContext = createContext(null);
 
@@ -17,6 +18,10 @@ export function WebSocketProvider({ children }) {
   const serverOffsetRef = useRef(0);
   const [lastAck, setLastAck] = useState(null);
   const [recentStatusEvents, setRecentStatusEvents] = useState([]);
+  // Server từ chối credential (đóng 1008): thử lại vô ích cho tới khi thiết bị
+  // được xác nhận lại, nên trạm phải báo rõ thay vì retry im lặng.
+  const [activationError, setActivationError] = useState(null);
+  const activationBlockedRef = useRef(false);
 
   // Station info from localStorage if configured
   const [stationConfig, setStationConfig] = useState(() => {
@@ -41,6 +46,8 @@ export function WebSocketProvider({ children }) {
     localStorage.removeItem('redcode_pending_dismiss');
     setAudioError(null);
     setActiveAlarms([]);
+    activationBlockedRef.current = false;
+    setActivationError(null);
     setStationConfig(config);
     if (config) {
       localStorage.setItem('redcode_station_config', JSON.stringify(config));
@@ -51,6 +58,7 @@ export function WebSocketProvider({ children }) {
 
   const synchronize = async () => {
     if (!stationConfig?.device_token) return;
+    if (activationBlockedRef.current) return; // credential đã bị thu hồi: đồng bộ sẽ luôn 401
     const socket = wsRef.current;
     const startedAt = Date.now();
     const pending = JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]');
@@ -79,6 +87,7 @@ export function WebSocketProvider({ children }) {
 
   const connect = useCallback(() => {
     if (disposedRef.current || (!stationConfig?.device_token && !token)) return;
+    if (activationBlockedRef.current) return; // chờ xác nhận lại thiết bị / đăng nhập lại
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -101,6 +110,7 @@ export function WebSocketProvider({ children }) {
         lastHeartbeatAckRef.current = Date.now();
         setIsConnected(true);
         reconnectAttemptsRef.current = 0;
+        setActivationError(null);
         console.log('[WebSocket] Kết nối thành công tới máy chủ Redcode');
 
         // Sync missed/active alarms for this station on connect/reconnect
@@ -132,10 +142,31 @@ export function WebSocketProvider({ children }) {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (disposedRef.current || wsRef.current !== ws) return;
         setIsConnected(false);
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+
+        // 1008 = server từ chối credential (thiết bị chưa xác nhận, token đã bị
+        // thu hồi, hoặc phiên đăng nhập hết hạn). Thử lại không thể thành công
+        // nên dừng vòng retry và báo rõ, thay vì để trạm hiện OFFLINE im lặng
+        // giống như mất mạng.
+        if (event.code === 1008) {
+          wsRef.current = null;
+          reconnectAttemptsRef.current = 0;
+          activationBlockedRef.current = true;
+          const isStation = !!stationConfig?.device_token;
+          setActivationError({
+            scope: isStation ? 'station' : 'dashboard',
+            reason: event.reason || '',
+            message: isStation
+              ? 'Thiết bị này chưa được xác nhận cho trạm, hoặc credential của trạm đã bị thu hồi.'
+              : 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.',
+          });
+          console.warn('[WebSocket] Credential bị từ chối (1008):', event.reason || '(không có lý do)');
+          return;
+        }
+
         scheduleReconnect();
       };
 
@@ -348,12 +379,23 @@ export function WebSocketProvider({ children }) {
   }, [connect]);
 
   const testConnection = () => new Promise((resolve, reject) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) { reject(new Error('Trạm chưa kết nối WebSocket')); return; }
-    const request_id = crypto.randomUUID();
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      reject(new Error(activationError?.message || 'Trạm chưa kết nối WebSocket'));
+      return;
+    }
+    const request_id = randomId();
     const timer = setTimeout(() => { connectionTestsRef.current.delete(request_id); reject(new Error('Không nhận phản hồi trong 5 giây')); }, 5000);
     connectionTestsRef.current.set(request_id, { resolve, reject, timer, started: Date.now() });
     wsRef.current.send(JSON.stringify({ type: 'PING', request_id }));
   });
+
+  // Cho phép thử lại thủ công sau khi đã xác nhận lại thiết bị / đăng nhập lại.
+  const retryConnection = () => {
+    activationBlockedRef.current = false;
+    setActivationError(null);
+    reconnectAttemptsRef.current = 0;
+    connect();
+  };
   const testDisplay = () => setDisplayTest({ alarm_id: 'display-test', code: 'KIỂM TRA HIỂN THỊ', name: 'ĐÂY LÀ CẢNH BÁO THỬ', department: stationConfig?.department, location: stationConfig?.location, note: 'Không tạo alarm thật, không gửi thông báo.', display_color: '#b91c1c', created_at: new Date().toISOString(), isTest: true });
 
   return (
@@ -370,6 +412,8 @@ export function WebSocketProvider({ children }) {
         audioReady,
         audioError,
         unlockAudio,
+        activationError,
+        retryConnection,
         stationConfig,
         saveStationConfig,
         lastAck,

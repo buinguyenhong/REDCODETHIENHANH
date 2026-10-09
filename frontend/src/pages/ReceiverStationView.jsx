@@ -6,7 +6,7 @@ import { api } from '../api/client';
 
 export default function ReceiverStationView() {
   const { user } = useAuth();
-  const { stationConfig, saveStationConfig, isConnected, audioReady, audioError, unlockAudio, testDisplay, testConnection, currentAlarm } = useWebSocket();
+  const { stationConfig, saveStationConfig, isConnected, audioReady, audioError, unlockAudio, testDisplay, testConnection, currentAlarm, activationError, retryConnection } = useWebSocket();
   const [stations, setStations] = useState([]);
   const [selected, setSelected] = useState('');
   const [message, setMessage] = useState('');
@@ -35,11 +35,19 @@ export default function ReceiverStationView() {
   return <div className="min-h-screen bg-slate-50 p-4 md:p-8 text-slate-900">
     <div className="max-w-4xl mx-auto space-y-6">
       <header className="border-b border-slate-300 pb-4"><h1 className="text-2xl font-bold">TRẠM NHẬN REDCODE</h1><p>{stationConfig?.name || 'Thiết bị chưa được xác nhận'} · {stationConfig?.station_code || 'Chưa định danh'}</p><p>{stationConfig?.department} — {stationConfig?.location}</p></header>
-      {(!stationConfig || changeDevice) && <section className="bg-white border p-5 space-y-3">
+      {activationError && <section role="alert" className="border-l-4 border-red-700 bg-white p-4 space-y-2">
+        <h2 className="font-bold text-red-800">MÁY CHỦ TỪ CHỐI KẾT NỐI</h2>
+        <p>{activationError.message}</p>
+        {activationError.reason && <p className="text-sm text-slate-600">Máy chủ trả về: {activationError.reason}</p>}
+        {activationError.scope === 'station' && <p className="text-sm">Cách xử lý: Admin đăng nhập một lần trên máy này, chọn lại trạm ở mục bên dưới rồi bấm <strong>XÁC NHẬN THIẾT BỊ NÀY</strong>. Trạm sẽ tự kết nối lại.</p>}
+        {activationError.scope === 'dashboard' && <p className="text-sm">Cách xử lý: <Link className="underline" to="/login">đăng nhập lại</Link>.</p>}
+        <button className="border border-slate-400 px-4 py-2" onClick={retryConnection}>THỬ LẠI KẾT NỐI</button>
+      </section>}
+      {(!stationConfig || changeDevice || activationError) && <section className="bg-white border p-5 space-y-3">
         <h2 className="font-bold">Xác nhận trạm trên thiết bị này</h2>
         {user?.role === 'ADMIN' ? <><p>Chọn trạm rồi xác nhận. Danh tính thiết bị được lưu tự động; kết nối cũ của trạm sẽ được thu hồi.</p><select className="w-full border p-3" value={selected} onChange={event => setSelected(event.target.value)}><option value="">Chọn trạm</option>{stations.map(station => <option key={station.id} value={station.id}>{station.station_code} — {station.name} ({station.department?.name})</option>)}</select><button disabled={!selected || busy} className="bg-red-700 text-white p-3 disabled:opacity-50" onClick={confirm}>XÁC NHẬN THIẾT BỊ NÀY</button></> : <p>Admin cần đăng nhập một lần trên máy này để xác nhận trạm. Sau đó tài khoản khoa có thể sử dụng hoặc máy chạy độc lập. {!user && <Link className="underline" to="/login">Đăng nhập Admin</Link>}</p>}
       </section>}
-      <section className="bg-white border p-6 space-y-4"><h2 className="text-xl font-bold">{stationConfig && isConnected ? 'TRẠM ĐÃ KẾT NỐI' : 'TRẠM CHƯA SẴN SÀNG'}</h2><p>Kết nối: {isConnected && stationConfig ? 'ONLINE' : 'OFFLINE / CHƯA XÁC NHẬN'} · Âm thanh: {audioReady ? 'READY' : 'CHƯA KIỂM TRA'}</p><p>User: {user?.display_name || 'Receiver tự động'} {user?.department?.name}</p>
+      <section className="bg-white border p-6 space-y-4"><h2 className="text-xl font-bold">{stationConfig && isConnected ? 'TRẠM ĐÃ KẾT NỐI' : 'TRẠM CHƯA SẴN SÀNG'}</h2><p>Kết nối: {isConnected && stationConfig ? 'ONLINE' : activationError ? 'BỊ MÁY CHỦ TỪ CHỐI — CẦN XÁC NHẬN LẠI THIẾT BỊ' : 'OFFLINE / CHƯA XÁC NHẬN'} · Âm thanh: {audioReady ? 'READY' : 'CHƯA KIỂM TRA'}</p><p>User: {user?.display_name || 'Receiver tự động'} {user?.department?.name}</p>
         <div className="flex flex-wrap gap-3">{[['sound', 'TEST LOA'], ['display', 'TEST HIỂN THỊ'], ['connection', 'TEST KẾT NỐI']].map(([kind, label]) => <button key={kind} disabled={!stationConfig || !!currentAlarm} className="border border-slate-400 px-4 py-3 disabled:opacity-40" onClick={() => test(kind)}>{label}</button>)}<button className="border px-4 py-3" onClick={() => document.documentElement.requestFullscreen().catch(error => setMessage(error.message))}>TOÀN MÀN HÌNH</button></div>
         {currentAlarm && <p>Có cảnh báo thật: tạm khóa thao tác test.</p>}
         {user?.role === 'ADMIN' && stationConfig && <button className="underline" onClick={() => setChangeDevice(!changeDevice)}>Đổi / xác nhận lại trạm</button>}

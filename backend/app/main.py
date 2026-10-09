@@ -109,6 +109,22 @@ async def configuration_audit(request, call_next):
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
+async def reject_websocket(websocket: WebSocket, reason: str) -> None:
+    """Từ chối một WebSocket nhưng vẫn để client đọc được mã đóng.
+
+    Gọi ``close()`` trước ``accept()`` khiến ASGI server trả về HTTP 403 cho
+    gói nâng cấp, và trình duyệt quy về mã đóng 1006 (abnormal closure) không
+    kèm lý do — credential bị từ chối trở nên không phân biệt được với mất
+    mạng, nên client cứ thử lại mãi thay vì yêu cầu xác nhận lại thiết bị.
+    Chấp nhận trước rồi đóng bằng 1008 sẽ gửi được close frame thật.
+    """
+    try:
+        await websocket.accept()
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=reason)
+    except Exception:
+        logger.debug("Không thể đóng sạch kết nối bị từ chối", exc_info=True)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -125,7 +141,7 @@ async def websocket_endpoint(
     actual_type = type or client_type or "station"
     if actual_type == "station":
         if not station_code or not token:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Station credentials required")
+            await reject_websocket(websocket, "Station credentials required")
             return
 
         # Validate station token against database
@@ -135,7 +151,7 @@ async def websocket_endpoint(
             station = (await session.execute(stmt)).scalar_one_or_none()
 
             if not station or not station.enabled or station.device_token_hash != expected_hash:
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid station credentials")
+                await reject_websocket(websocket, "Invalid station credentials")
                 return
 
         # Connect station
@@ -156,13 +172,13 @@ async def websocket_endpoint(
                     if not isinstance(msg, dict):
                         continue
                     if manager.active_stations.get(station_code) is not websocket:
-                        await websocket.close(code=1008)
+                        await websocket.close(code=4001, reason="Station session superseded")
                         return
                     msg_type = msg.get("type")
 
                     if msg_type == "HEARTBEAT":
                         if manager.active_stations.get(station_code) is not websocket:
-                            await websocket.close(code=1008)
+                            await websocket.close(code=4001, reason="Station session superseded")
                             return
                         audio_ready = bool(msg.get("audio_ready", False))
                         client_ready = bool(msg.get("client_ready", True))
@@ -207,12 +223,12 @@ async def websocket_endpoint(
     elif actual_type == "dashboard":
         # Strictly authenticate dashboard token
         if not token or not token.strip():
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Dashboard token required")
+            await reject_websocket(websocket, "Dashboard token required")
             return
 
         payload = decode_access_token(token)
         if not payload or not payload.get("sub"):
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token")
+            await reject_websocket(websocket, "Invalid or expired token")
             return
 
         username = payload.get("sub")
@@ -220,7 +236,7 @@ async def websocket_endpoint(
             stmt = select(User).where(User.username == username)
             user = (await session.execute(stmt)).scalar_one_or_none()
             if not user or not user.enabled or user.role not in [UserRole.ADMIN.value, UserRole.OPERATOR.value]:
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorized or inactive user")
+                await reject_websocket(websocket, "Unauthorized or inactive user")
                 return
 
         # Dashboard client authenticated successfully
@@ -249,4 +265,4 @@ async def websocket_endpoint(
             await manager.disconnect_dashboard(websocket)
 
     else:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unsupported client type")
+        await reject_websocket(websocket, "Unsupported client type")

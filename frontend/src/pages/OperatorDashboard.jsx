@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
 import { api } from '../api/client';
+import { randomId } from '../utils/uuid';
 import { Bell, Clock, MapPin, CheckCircle, ShieldAlert, History, XCircle, AlertCircle } from 'lucide-react';
 
 export default function OperatorDashboard() {
@@ -70,7 +71,7 @@ export default function OperatorDashboard() {
         note: note.trim() || selectedType.description || '',
       };
       const fingerprint = JSON.stringify(payload);
-      if (requestRef.current?.fingerprint !== fingerprint) requestRef.current = { fingerprint, key: crypto.randomUUID() };
+      if (requestRef.current?.fingerprint !== fingerprint) requestRef.current = { fingerprint, key: randomId() };
       await api.createAlarm({ ...payload, idempotency_key: requestRef.current.key });
       requestRef.current = null;
 

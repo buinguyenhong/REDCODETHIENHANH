@@ -1,15 +1,16 @@
 import io
+import json
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
+import websockets
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select, func
 from openpyxl import load_workbook
-from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 from app.main import app
 from app.database import Base, engine, AsyncSessionLocal
@@ -20,6 +21,7 @@ from app.core.alarm_lifecycle import expire_alarms
 from app.core.n8n_outbox import outbox_worker
 from app.config import settings
 from app.api.reports import parse_date_range
+from tests.live_server import running_server
 
 
 @pytest_asyncio.fixture(scope='module', autouse=True)
@@ -188,12 +190,25 @@ async def test_report_half_open_boundaries_summary_offline_and_export(start, end
         assert workbook.active.max_row - 1 == len(ids)
 
 
-def test_station_ws_rejects_missing_wrong_credentials():
-    with TestClient(app) as client:
-        for url in ['/ws?type=station', '/ws?type=station&station_code=ST-CC-01&token=wrong']:
-            with pytest.raises(WebSocketDisconnect):
-                with client.websocket_connect(url):
-                    pass
+@pytest.mark.asyncio
+async def test_station_ws_rejects_missing_wrong_credentials():
+    """A rejected station credential must arrive as close code 1008, not a 403.
+
+    Closing before accept() makes the server answer the upgrade with HTTP 403,
+    which browsers report as close code 1006 with no reason — indistinguishable
+    from a dropped network, so the kiosk would retry forever instead of asking
+    to be re-confirmed. The gateway therefore accepts and closes with 1008.
+
+    Runs against a real uvicorn: the 403-vs-1008 choice is made by the ASGI
+    server itself, so TestClient cannot stand in for it here.
+    """
+    async with running_server(os.getenv('DATABASE_URL', 'sqlite+aiosqlite:///./redcode.db')) as (_, ws_url):
+        for query in ['type=station', 'type=station&station_code=ST-CC-01&token=wrong']:
+            async with websockets.connect(f'{ws_url}?{query}') as ws:
+                with pytest.raises(websockets.exceptions.ConnectionClosed) as exc:
+                    await ws.recv()
+            assert exc.value.rcvd.code == 1008
+            assert exc.value.rcvd.reason, 'client must receive a readable reason'
 
 
 @pytest.mark.asyncio
