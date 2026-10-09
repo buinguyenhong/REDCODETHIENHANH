@@ -23,8 +23,12 @@ jobs:
     env:
       ENVIRONMENT: test
       DEMO_MODE: 'true'
-      DATABASE_URL: sqlite+aiosqlite:///./ci-unit.db
-      LIVE_TEST_DATABASE_URL: postgresql+asyncpg://redcode_ci:ci-only-not-production@localhost:5432/redcode_ci
+      # Bộ test chạy trên chính PostgreSQL — cùng engine với production. Trước
+      # đây CI chạy trên SQLite, nên lỗi chỉ xuất hiện với PostgreSQL pool thật
+      # (connection gắn với event loop cũ) không thể lộ ra. Live transport dùng
+      # database riêng để không tranh chấp với phần còn lại của suite.
+      DATABASE_URL: postgresql+asyncpg://redcode_ci:ci-only-not-production@localhost:5432/redcode_ci
+      LIVE_TEST_DATABASE_URL: postgresql+asyncpg://redcode_ci:ci-only-not-production@localhost:5432/redcode_live
     defaults:
       run:
         working-directory: backend
@@ -34,6 +38,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
+      - name: Create live transport database
+        env:
+          PGPASSWORD: ci-only-not-production
+        run: psql -h localhost -U redcode_ci -d redcode_ci -c 'CREATE DATABASE redcode_live'
       - run: alembic upgrade head
       - run: pytest tests -v
   frontend:
