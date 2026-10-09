@@ -1,0 +1,960 @@
+<title>Điều kiện lên Production REDCODE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --ground: #f2f5f6;
+    --surface: #ffffff;
+    --surface-sunk: #e9eef0;
+    --ink: #141e26;
+    --ink-soft: #586773;
+    --ink-faint: #8595a1;
+    --rule: #d7e0e4;
+    --rule-strong: #b3c1c8;
+    --accent: #a8101a;
+    --accent-soft: #f7e6e7;
+    --block: #a8101a;
+    --block-bg: #f8e7e8;
+    --todo: #8a5a06;
+    --todo-bg: #faf0da;
+    --done: #1a6244;
+    --done-bg: #e2f0ea;
+    --blocked: #4a5a66;
+    --blocked-bg: #e6ecef;
+
+    --font-display: 'Barlow Condensed', 'Be Vietnam Pro', 'Segoe UI', system-ui, sans-serif;
+    --font-body: 'Be Vietnam Pro', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --ground: #0f1518;
+      --surface: #161e23;
+      --surface-sunk: #1b252b;
+      --ink: #e4ecf0;
+      --ink-soft: #9babb6;
+      --ink-faint: #74848f;
+      --rule: #28353c;
+      --rule-strong: #3d4d56;
+      --accent: #ff6b6b;
+      --accent-soft: #2a1a1c;
+      --block: #ff7b7b;
+      --block-bg: #2b1a1c;
+      --todo: #e3ac52;
+      --todo-bg: #2a2317;
+      --done: #5fc79b;
+      --done-bg: #16271f;
+      --blocked: #9babb6;
+      --blocked-bg: #1e272c;
+    }
+  }
+
+  :root[data-theme='dark'] {
+    --ground: #0f1518;
+    --surface: #161e23;
+    --surface-sunk: #1b252b;
+    --ink: #e4ecf0;
+    --ink-soft: #9babb6;
+    --ink-faint: #74848f;
+    --rule: #28353c;
+    --rule-strong: #3d4d56;
+    --accent: #ff6b6b;
+    --accent-soft: #2a1a1c;
+    --block: #ff7b7b;
+    --block-bg: #2b1a1c;
+    --todo: #e3ac52;
+    --todo-bg: #2a2317;
+    --done: #5fc79b;
+    --done-bg: #16271f;
+    --blocked: #9babb6;
+    --blocked-bg: #1e272c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.65;
+    padding-inline: clamp(16px, 4vw, 40px);
+    padding-block: 0 72px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin-inline: auto; }
+
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* ---------- header ---------- */
+
+  .masthead {
+    padding-block: 40px 28px;
+    border-bottom: 3px solid var(--ink);
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  h1 {
+    font-family: var(--font-body);
+    font-weight: 700;
+    font-size: clamp(28px, 4.6vw, 46px);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    margin: 12px 0 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    margin: 14px 0 0;
+    max-width: 62ch;
+    color: var(--ink-soft);
+    font-size: 15.5px;
+  }
+
+  .verdict {
+    margin-top: 26px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px 18px;
+    border-left: 5px solid var(--block);
+    background: var(--block-bg);
+    padding: 16px 20px;
+  }
+
+  .verdict strong {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(22px, 3.4vw, 31px);
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    color: var(--block);
+    line-height: 1;
+  }
+
+  .verdict span { color: var(--ink-soft); font-size: 14.5px; }
+
+  /* ---------- stat strip ---------- */
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 30px;
+  }
+
+  .stat { background: var(--surface); padding: 16px 18px 15px; }
+
+  .stat .num {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 40px;
+    line-height: 0.95;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    display: block;
+  }
+
+  .stat .num.is-block { color: var(--block); }
+  .stat .num.is-todo { color: var(--todo); }
+
+  .stat .lbl {
+    display: block;
+    margin-top: 7px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: var(--ink-soft);
+  }
+
+  /* ---------- gates ---------- */
+
+  .gate { margin-top: 54px; }
+
+  .gate-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 16px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .gate-no {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .gate-head h2 {
+    font-family: var(--font-body);
+    font-weight: 700;
+    font-size: clamp(19px, 2.6vw, 25px);
+    letter-spacing: -0.01em;
+    margin: 0;
+    flex: 1 1 auto;
+    text-wrap: balance;
+  }
+
+  .gate-head .count {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .gate-note {
+    margin: 14px 0 0;
+    color: var(--ink-soft);
+    font-size: 14.5px;
+    max-width: 68ch;
+  }
+
+  ul.items { list-style: none; margin: 6px 0 0; padding: 0; }
+
+  ul.items > li {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px 22px;
+    padding: 18px 0 18px 16px;
+    border-bottom: 1px solid var(--rule);
+    border-left: 3px solid var(--rule-strong);
+  }
+
+  ul.items > li.is-block { border-left-color: var(--block); }
+  ul.items > li.is-todo { border-left-color: var(--todo); }
+  ul.items > li.is-done { border-left-color: var(--done); }
+
+  .item-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 12px;
+  }
+
+  .item-top h3 {
+    font-family: var(--font-body);
+    font-size: 16.5px;
+    font-weight: 600;
+    margin: 0;
+    flex: 1 1 auto;
+    min-width: 15ch;
+  }
+
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+
+  .chip.block { background: var(--block-bg); color: var(--block); }
+  .chip.todo { background: var(--todo-bg); color: var(--todo); }
+  .chip.done { background: var(--done-bg); color: var(--done); }
+  .chip.blocked { background: var(--blocked-bg); color: var(--blocked); }
+
+  .item-body { color: var(--ink-soft); font-size: 14.5px; max-width: 72ch; }
+  .item-body p { margin: 0; }
+  .item-body p + p { margin-top: 7px; }
+  .item-body strong { color: var(--ink); font-weight: 600; }
+  .item-body ul.ticks { margin: 7px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+  .item-body ul.ticks li::marker { color: var(--done); }
+  .item-body ul.ticks b { color: var(--ink); font-weight: 600; }
+
+  .action {
+    color: var(--ink);
+    font-size: 14.5px;
+    max-width: 72ch;
+  }
+  .action b {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    background: var(--surface-sunk);
+    padding: 1px 5px;
+    border: 1px solid var(--rule);
+  }
+
+  /* ---------- tables ---------- */
+
+  .table-scroll {
+    overflow-x: auto;
+    margin-top: 20px;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+  }
+
+  table { border-collapse: collapse; width: 100%; min-width: 660px; }
+
+  caption {
+    text-align: left;
+    font-size: 13px;
+    color: var(--ink-soft);
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  th, td {
+    text-align: left;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 14px;
+    vertical-align: top;
+  }
+
+  th {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    font-weight: 500;
+    background: var(--surface-sunk);
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  td.id { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; color: var(--ink-soft); }
+  td.st { white-space: nowrap; }
+
+  /* ---------- acceptance matrix ---------- */
+
+  .matrix {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+    gap: 6px;
+    margin-top: 20px;
+  }
+
+  .cell {
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    padding: 9px 6px 8px;
+    text-align: center;
+  }
+
+  .cell .n {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 21px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+
+  .cell .t {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-top: 4px;
+    color: var(--ink-soft);
+  }
+
+  .cell.s-pass { background: var(--done-bg); border-color: var(--done); }
+  .cell.s-pass .n { color: var(--done); }
+  .cell.s-pass .t { color: var(--done); }
+
+  .cell.s-part { background: var(--todo-bg); border-color: var(--todo); }
+  .cell.s-part .n { color: var(--todo); }
+  .cell.s-part .t { color: var(--todo); }
+
+  .cell.s-block { background: var(--blocked-bg); border-color: var(--blocked); }
+  .cell.s-block .n { color: var(--blocked); }
+  .cell.s-block .t { color: var(--blocked); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+
+  .legend span { display: flex; align-items: center; gap: 7px; }
+
+  .swatch { width: 12px; height: 12px; border: 1px solid; display: inline-block; }
+  .swatch.p { background: var(--done-bg); border-color: var(--done); }
+  .swatch.q { background: var(--todo-bg); border-color: var(--todo); }
+  .swatch.r { background: var(--blocked-bg); border-color: var(--blocked); }
+
+  /* ---------- footer ---------- */
+
+  .closing {
+    margin-top: 58px;
+    padding-top: 24px;
+    border-top: 3px solid var(--ink);
+  }
+
+  .closing h2 {
+    font-family: var(--font-body);
+    font-size: clamp(19px, 2.6vw, 25px);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+
+  .closing p { color: var(--ink-soft); font-size: 14.5px; max-width: 68ch; margin: 0 0 4px; }
+
+  .sources {
+    margin-top: 34px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+
+  .sources code { background: none; border: none; padding: 0; color: var(--ink-soft); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">REDCODE HOSPITAL · Hệ thống cảnh báo y tế khẩn cấp nội bộ</p>
+    <h1>Điều kiện lên Production REDCODE</h1>
+    <p class="standfirst">
+      Tổng hợp những việc còn lại trước khi hệ thống được dùng thật trong bệnh viện, xếp theo
+      thứ tự cổng phải vượt qua. Trạng thái tính đến 2026-10-09, tổng hợp từ
+      <code>project.md</code> mục 40–48, <code>agent_changelog.md</code> và kiểm tra trực tiếp
+      trên máy hiện tại.
+    </p>
+
+    <div class="verdict">
+      <strong>Chưa đủ điều kiện</strong>
+      <span>3 chặn cứng chưa gỡ · 10/25 nghiệm thu chưa chạy được · 13 finding còn PARTIAL</span>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat">
+      <span class="num is-block">3</span>
+      <span class="lbl">Chặn cứng — không thể triển khai khi còn</span>
+    </div>
+    <div class="stat">
+      <span class="num is-todo">10</span>
+      <span class="lbl">Nghiệm thu 01–25 chưa có bằng chứng</span>
+    </div>
+    <div class="stat">
+      <span class="num is-todo">13</span>
+      <span class="lbl">Finding R01–R16 còn PARTIAL</span>
+    </div>
+    <div class="stat">
+      <span class="num">52</span>
+      <span class="lbl">Backend test PASS trên cả SQLite và PostgreSQL</span>
+    </div>
+  </div>
+
+  <!-- ============ GATE 1 ============ -->
+  <section class="gate">
+    <div class="gate-head">
+      <span class="gate-no">Cổng 1</span>
+      <h2>Hạ tầng và dữ liệu</h2>
+      <span class="count">4 việc</span>
+    </div>
+    <p class="gate-note">
+      Nhóm này phải xong trước tiên: chưa có môi trường production thì mọi kết quả kiểm thử
+      phía sau đều không nói lên điều gì về hệ thống thật.
+    </p>
+
+    <ul class="items">
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Stack production chưa từng được dựng</h3>
+          <span class="chip todo">Còn thiếu</span>
+        </div>
+        <div class="item-body">
+          <p>
+            <strong>Cập nhật 2026-10-09:</strong> Docker engine <em>đã hoạt động</em> — Server Docker
+            Desktop 4.50.0, Engine 28.5.1, <code>docker info</code> thành công, Compose
+            v2.40.3-desktop.1. Blocker cứng trước đây (<code>dockerDesktopLinuxEngine</code> không
+            tồn tại) nay đã hết. Việc còn lại là <em>dựng stack</em>: image backend và Nginx chưa
+            từng được build, <code>docker compose up</code> chưa từng chạy.
+          </p>
+          <p>
+            Lưu ý khi dựng: <code>docker-compose.yml</code> ép <code>ENVIRONMENT=production</code>,
+            còn <code>.env</code> hiện tại vẫn là cấu hình dev (<code>DATABASE_URL</code> SQLite,
+            <code>ALLOWED_ORIGINS=*</code>) → <code>app/config.py</code> sẽ chặn ngay lúc khởi động.
+            Đó là thiết kế đúng, không phải lỗi.
+          </p>
+        </div>
+        <p class="action"><b>Việc cần</b>Chuẩn bị <code>.env</code> production hợp lệ, rồi chạy <code>docker compose config --quiet</code> → <code>build</code> → <code>up -d</code> → <code>ps</code> → <code>nginx -t</code> → <code>curl /api/health</code>.</p>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Hai trong ba đường migration PostgreSQL chưa được chứng minh</h3>
+          <span class="chip todo">Còn thiếu</span>
+        </div>
+        <div class="item-body">
+          <p>
+            <strong>Cập nhật 2026-10-09:</strong> đã dựng PostgreSQL 16.15 thật (container tạm, đã
+            xoá sau khi đo) và chứng minh được <strong>đường fresh install</strong>:
+            <code>alembic upgrade head</code> chạy <strong>5/5 migration PASS</strong> trên schema
+            sạch, và <code>pytest tests/</code> cho <strong>52 passed</strong> — trong đó
+            <code>test_alembic_upgrade_and_schema_alignment</code> xác nhận mọi cột ORM tồn tại
+            trong schema PostgreSQL thật. Head thực tế là <code>20261007_integrations</code>.
+          </p>
+          <p>
+            Còn thiếu hai đường: <strong>upgrade từ release trước</strong>, và <strong>adoption cho
+            DB dev cũ tạo bằng <code>create_all</code></strong> — đúng loại DB đang nằm trong repo
+            với bảng <code>alembic_version</code> rỗng.
+          </p>
+        </div>
+        <p class="action"><b>Việc cần</b>Chạy <code>tests/migration_smoke.py</code> và lặp lại chuỗi migration trên <em>bản sao</em> DB cũ trước khi đụng dữ liệu thật.</p>
+      </li>
+
+      <li class="is-block">
+        <div class="item-top">
+          <h3>Chưa chứng minh backup / restore</h3>
+          <span class="chip block">Chặn cứng</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Chưa chạy round-trip <code>pg_dump</code> → restore vào DB riêng, chưa archive và khôi
+            phục volume audio. Đây là đường lui duy nhất khi migration production hỏng, vì chính
+            sách là <strong>forward-only, không downgrade</strong>.
+          </p>
+        </div>
+        <p class="action"><b>Việc cần</b>Restore drill ở môi trường riêng, ghi lại bằng chứng trước ngày triển khai.</p>
+      </li>
+
+      <li class="is-block">
+        <div class="item-top">
+          <h3>CI chưa có bằng chứng chạy thật</h3>
+          <span class="chip block">Chặn cứng</span>
+        </div>
+        <div class="item-body">
+          <p>
+            <code>.github/workflows/ci.yml</code> đã tồn tại, nhưng <code>gh auth status</code>
+            chưa đăng nhập nên chưa xác minh được Actions.
+          </p>
+          <p>
+            <strong>Cập nhật 2026-10-09:</strong> đã chạy tay đúng ba job của CI trên máy — cả ba
+            <strong>đều xanh</strong>:
+          </p>
+          <ul class="ticks">
+            <li>backend: <code>pytest tests -v</code> trên PostgreSQL 16.15 → <b>52 passed</b></li>
+            <li>frontend: <code>npm test</code> <b>8 passed</b>, <code>npm run build</code> <b>PASS</b></li>
+            <li>docker: <code>docker build</code> cho cả backend và Nginx <b>PASS</b></li>
+          </ul>
+          <p>
+            Quan trọng hơn: đã tìm và sửa <strong>hai lỗi khiến CI không thể xanh</strong> —
+            <code>pytest tests</code> thiếu <code>pythonpath</code> nên chết ở
+            <code>ModuleNotFoundError: No module named 'app'</code>, và bộ test chưa từng chạy
+            trên PostgreSQL (chỉ SQLite), nên lỗi chỉ xuất hiện với PostgreSQL pool thật không
+            thể lộ ra. CI nay chạy trên PostgreSQL.
+          </p>
+          <p>
+            Nhưng đây vẫn là <strong>chạy tay mô phỏng</strong>, không phải một lần chạy trên
+            Actions — nên mục này <strong>vẫn là chặn cứng</strong>.
+          </p>
+        </div>
+        <p class="action"><b>Việc cần</b>Đăng nhập <code>gh</code>, push nhánh, xác nhận ba job đều xanh trên Actions.</p>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============ GATE 2 ============ -->
+  <section class="gate">
+    <div class="gate-head">
+      <span class="gate-no">Cổng 2</span>
+      <h2>Nghiệm thu thực địa</h2>
+      <span class="count">5 việc</span>
+    </div>
+    <p class="gate-note">
+      Đây là phần lớn nhất còn thiếu. Toàn bộ giá trị của hệ thống nằm ở việc <em>loa kêu đúng lúc
+      trên máy thật</em>, và điều đó chưa từng được đo.
+    </p>
+
+    <ul class="items">
+      <li class="is-block">
+        <div class="item-top">
+          <h3>Nghiệm thu PC / Android / loa thật</h3>
+          <span class="chip block">Chặn cứng</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Chưa kiểm thử trên thiết bị thật: khởi động lại máy rồi tự kêu mà <strong>không cần
+            người thao tác</strong>, autoplay không bị chặn, mất mạng / refresh / reboot, và hành vi
+            volume / mute / screen sleep. <code>project.md</code> mục 44 ghi rõ: không được kết luận
+            đáp ứng yêu cầu unattended alarm trước khi thử trên thiết bị thực.
+          </p>
+        </div>
+        <p class="action"><b>Việc cần</b>Chạy trên ít nhất một PC và một Android đúng cấu hình bệnh viện, ghi lại video/bằng chứng vật lý.</p>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Tải thật 50 → 100 WebSocket qua Nginx + PostgreSQL</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Test 50/100 hiện có chạy trên local TCP với SQLite. Cần đo qua Nginx và PostgreSQL:
+            group-in / group-out, heartbeat, alarm đồng thời, slow client, reconnect và restart —
+            kèm <strong>latency p50/p95/max, số lost, số duplicate</strong>. Mục tiêu LAN bình thường
+            dưới 1 giây.
+          </p>
+        </div>
+        <p class="action"><b>Việc cần</b>Chạy trên staging có Nginx + PG; đây là điều kiện của acceptance 03.</p>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Browser end-to-end cho FIFO và audio</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Hiện chỉ có unit test JS và ACK ở mức giao thức. Còn thiếu: ba alarm đồng thời xếp hàng
+            FIFO, sync / duplicate / stale event, autoplay rejection thật, cancel đầu hàng dừng audio
+            và tiến queue, repeat / interval theo cấu hình.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Luồng xác nhận lại thiết bị trên browser thật</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Bản sửa 2026-10-09 đã cho trạm báo rõ khi credential bị từ chối thay vì retry im lặng,
+            và probe giao thức đã PASS 5/5 trên uvicorn thật. Nhưng vòng đời đầy đủ —
+            <em>bị từ chối → Admin xác nhận lại → tự kết nối lại</em> — chưa chạy trên trình duyệt.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Heartbeat half-open và race socket A/B</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Chưa có test mạng thực cho kết nối half-open (socket còn mở nhưng đã chết), tranh chấp
+            hai socket cùng trạm, và server restart khi trạm đang chạy.
+          </p>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============ GATE 3 ============ -->
+  <section class="gate">
+    <div class="gate-head">
+      <span class="gate-no">Cổng 3</span>
+      <h2>Bảo mật và cấu hình production</h2>
+      <span class="count">5 việc</span>
+    </div>
+
+    <ul class="items">
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Cấu hình <code>.env</code> production</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Validator sẽ fail-fast nếu sai, nhưng phải chuẩn bị đúng: <code>ENVIRONMENT=production</code>,
+            <code>DEMO_MODE=false</code>, <code>DATABASE_URL</code> PostgreSQL, <code>SECRET_KEY</code>
+            riêng ≥ 32 ký tự (không dùng giá trị mặc định), và <code>ALLOWED_ORIGINS</code> cụ thể —
+            không được để <code>*</code>.
+          </p>
+        </div>
+        <p class="action"><b>Lưu ý</b>Compose ép <code>ENVIRONMENT=production</code>; đổi <code>.env</code> phải recreate container, không chỉ restart.</p>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Không để lọt tài khoản demo</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Production seed chỉ bootstrap một Admin. Các tài khoản demo
+            (<code>admin/admin123456</code>, <code>operator_cc/pass123456</code>, <code>operator_hscc/pass123456</code>)
+            và dữ liệu demo <strong>tuyệt đối không được lên production</strong>. Xác nhận
+            <code>INITIAL_ADMIN_PASSWORD</code> được đặt riêng cho lần cài đầu.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Quét credential rò rỉ trong log</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            WebSocket mang token trong query string. Nginx <code>/ws</code> và Uvicorn đã tắt access
+            log trong repo, nhưng phải <strong>quét thật</strong> access log của mọi proxy trên
+            deployment để chắc chắn không có token, password hay URL đầy đủ.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-done">
+        <div class="item-top">
+          <h3>TLS nội bộ — khuyến nghị, không còn là chặn cứng</h3>
+          <span class="chip done">Đã gỡ</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Nginx trong repo chỉ <code>listen 80</code>, chưa có certificate. Trước đây điều này là
+            chặn cứng vì <code>crypto.randomUUID()</code> chỉ tồn tại trong secure context, nên mọi
+            máy trạm truy cập qua HTTP LAN đều lỗi khi phát báo động.
+            <strong>Bản sửa 2026-10-09 đã gỡ chặn này</strong>: <code>randomId()</code> có fallback
+            RFC 4122 v4, nên HTTP thuần chạy được.
+          </p>
+          <p>
+            TLS vẫn nên làm nếu bệnh viện có proxy nội bộ — terminate ở đó, forward <code>/api</code>,
+            <code>/assets/audio</code> và <code>/ws</code> cùng origin, và giữ hỗ trợ Upgrade cho
+            WebSocket.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Hoàn tất validate upload và toàn bộ ràng buộc dữ liệu</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Upload audio còn thiếu <strong>content MIME sniffing</strong>. R14 cũng còn PARTIAL ở phần
+            kiểm tra toàn bộ FK / null / bounds. Nginx giới hạn body 20M nên file sát ngưỡng có thể bị
+            413 — dùng file nhỏ hơn.
+          </p>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============ GATE 4 ============ -->
+  <section class="gate">
+    <div class="gate-head">
+      <span class="gate-no">Cổng 4</span>
+      <h2>Bàn giao vận hành</h2>
+      <span class="count">4 việc</span>
+    </div>
+
+    <ul class="items">
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Ghi rõ ràng buộc một worker</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            WebSocket manager nằm trong bộ nhớ tiến trình, nên Uvicorn phải chạy
+            <code>--workers 1</code> và <strong>không được scale ngang</strong>. Đây là ràng buộc kiến
+            trúc, phải ghi vào tài liệu bàn giao để không ai vô tình tăng worker.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Provisioning từng máy nhận</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Trên từng máy: đăng nhập Admin → <code>/kiosk</code> → chọn trạm → XÁC NHẬN THIẾT BỊ.
+            Sau đó <strong>không xóa localStorage / profile browser</strong>; đổi origin hoặc profile
+            bắt buộc xác nhận lại. Chạy TEST LOA, TEST HIỂN THỊ, TEST KẾT NỐI và xác nhận nghe được
+            bằng tai, không chỉ thấy READY trên màn hình.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Cấu hình kiosk và thử reboot</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Auto-launch, volume / mute, power và screen sleep — rồi khởi động lại thiết bị để kiểm tra
+            trạm tự lên và tự kết nối. Android cần kiosk browser hoặc WebView policy cho phép autoplay.
+          </p>
+        </div>
+      </li>
+
+      <li class="is-todo">
+        <div class="item-top">
+          <h3>Hồ sơ bàn giao và người trực</h3>
+          <span class="chip todo">Cần làm</span>
+        </div>
+        <div class="item-body">
+          <p>
+            Ghi: release hash / image, Alembic revision, topology / network / origin truy cập, inventory
+            trạm – browser – loa, cấu hình permission và group mapping, bằng chứng backup/restore,
+            người trực và quy trình xử lý sự cố.
+          </p>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============ FINDINGS ============ -->
+  <section class="gate">
+    <div class="gate-head">
+      <span class="gate-no">Hồ sơ</span>
+      <h2>Finding R01–R16 còn lại</h2>
+      <span class="count">13 PARTIAL · 3 FIXED</span>
+    </div>
+    <p class="gate-note">
+      Trạng thái sau đợt 2026-10-09. Chỉ ba finding đủ điều kiện đóng; phần còn lại đã có code hoặc
+      test một phần nhưng chưa có bằng chứng end-to-end.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <caption>R01–R16 · phần việc còn lại của từng mục</caption>
+        <thead>
+          <tr>
+            <th scope="col">Finding</th>
+            <th scope="col">Trạng thái</th>
+            <th scope="col">Còn lại</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">R01</td><td class="st"><span class="chip todo">Partial</span></td><td>PostgreSQL thật và đường adoption DB <code>create_all</code> cũ.</td></tr>
+          <tr><td class="id">R02</td><td class="st"><span class="chip todo">Partial</span></td><td>Chưa chứng minh deadline dưới 1 giây sau mọi kiểu crash.</td></tr>
+          <tr><td class="id">R03</td><td class="st"><span class="chip todo">Partial</span></td><td>Thứ tự khi commit và dispatch đồng thời ở phía server; browser thật.</td></tr>
+          <tr><td class="id">R04</td><td class="st"><span class="chip done">Fixed</span></td><td>Chỉ còn xác nhận trên browser/thiết bị.</td></tr>
+          <tr><td class="id">R05</td><td class="st"><span class="chip todo">Partial</span></td><td>Test mạng thực cho half-open và restart.</td></tr>
+          <tr><td class="id">R06</td><td class="st"><span class="chip todo">Partial</span></td><td>ACK kết quả test audio về Admin, enum UNKNOWN, thiết bị thật.</td></tr>
+          <tr><td class="id">R07</td><td class="st"><span class="chip done">Fixed</span></td><td>Chỉ còn browser boot / refresh. Lỗi activation đã có code và test 2026-10-09.</td></tr>
+          <tr><td class="id">R08</td><td class="st"><span class="chip todo">Partial</span></td><td>Browser integration, thu hồi socket dashboard ngay, dọn pending action theo identity.</td></tr>
+          <tr><td class="id">R09</td><td class="st"><span class="chip todo">Partial</span></td><td>Khóa đa worker, Admin retry, giám sát backlog, cấu hình qua UI.</td></tr>
+          <tr><td class="id">R10</td><td class="st"><span class="chip todo">Partial</span></td><td>Permission theo từng user, migration JSON legacy.</td></tr>
+          <tr><td class="id">R11</td><td class="st"><span class="chip todo">Partial</span></td><td>Audit cấu hình before/after trong cùng transaction, ACK audio-test.</td></tr>
+          <tr><td class="id">R12</td><td class="st"><span class="chip todo">Partial</span></td><td>UI và API đọc/sửa membership của receiver group.</td></tr>
+          <tr><td class="id">R13</td><td class="st"><span class="chip todo">Partial</span></td><td>Thu hồi token khi đăng ký lại; UI bật/tắt đầy đủ.</td></tr>
+          <tr><td class="id">R14</td><td class="st"><span class="chip todo">Partial</span></td><td>MIME sniffing, toàn bộ FK/null/bounds, quét log thật.</td></tr>
+          <tr><td class="id">R15</td><td class="st"><span class="chip todo">Partial</span></td><td>Readiness theo task và cache kết quả probe integration.</td></tr>
+          <tr><td class="id">R16</td><td class="st"><span class="chip todo">Partial</span></td><td>SQL aggregate, thời lượng trung bình, clinical polish, backup restore.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ ACCEPTANCE ============ -->
+  <section class="gate">
+    <div class="gate-head">
+      <span class="gate-no">Ma trận</span>
+      <h2>Nghiệm thu 01–25</h2>
+      <span class="count">7 PASS · 8 PARTIAL · 10 chưa chạy</span>
+    </div>
+    <p class="gate-note">
+      PASS ở đây nghĩa là <em>đã kiểm chứng ở mức API/SQLite</em> — chưa phải nghiệm thu production.
+      Chỉ khi Cổng 1 và Cổng 2 xong thì các ô mới có giá trị thật.
+    </p>
+
+    <div class="matrix">
+      <div class="cell s-pass" title="01 · User không có permission không thể phát alarm"><span class="n">01</span><span class="t">Pass</span></div>
+      <div class="cell s-pass" title="02 · User có permission phát alarm thành công"><span class="n">02</span><span class="t">Pass</span></div>
+      <div class="cell s-block" title="03 · 50+ client WebSocket cùng kết nối — cần Nginx/PG thật"><span class="n">03</span><span class="t">Chưa</span></div>
+      <div class="cell s-part" title="04 · Alarm broadcast đúng receiver group"><span class="n">04</span><span class="t">Partial</span></div>
+      <div class="cell s-part" title="05 · Client ngoài group không nhận alarm"><span class="n">05</span><span class="t">Partial</span></div>
+      <div class="cell s-part" title="06 · Hai alarm liên tiếp xử lý FIFO"><span class="n">06</span><span class="t">Partial</span></div>
+      <div class="cell s-block" title="07 · Client mất mạng tự reconnect — cần thiết bị thật"><span class="n">07</span><span class="t">Chưa</span></div>
+      <div class="cell s-block" title="08 · Server restart, client tự reconnect — cần thiết bị thật"><span class="n">08</span><span class="t">Chưa</span></div>
+      <div class="cell s-part" title="09 · n8n down nhưng Redcode vẫn phát alarm"><span class="n">09</span><span class="t">Partial</span></div>
+      <div class="cell s-part" title="10 · n8n down được ghi log"><span class="n">10</span><span class="t">Partial</span></div>
+      <div class="cell s-block" title="11 · Client offline xuất hiện trong Admin dashboard — cần Nginx/PG"><span class="n">11</span><span class="t">Chưa</span></div>
+      <div class="cell s-block" title="12 · Client reconnect chuyển lại ONLINE — cần Nginx/PG"><span class="n">12</span><span class="t">Chưa</span></div>
+      <div class="cell s-block" title="13 · Audio local vẫn phát khi Internet bị ngắt — cần loa thật"><span class="n">13</span><span class="t">Chưa</span></div>
+      <div class="cell s-part" title="14 · Audio test được từ Admin"><span class="n">14</span><span class="t">Partial</span></div>
+      <div class="cell s-pass" title="15 · Dismiss tại client A không làm mất alarm tại client B"><span class="n">15</span><span class="t">Pass</span></div>
+      <div class="cell s-pass" title="16 · Alarm history vẫn tồn tại sau dismiss"><span class="n">16</span><span class="t">Pass</span></div>
+      <div class="cell s-pass" title="17 · Export XLSX hoạt động"><span class="n">17</span><span class="t">Pass</span></div>
+      <div class="cell s-block" title="18 · Database restart không mất dữ liệu — cần PostgreSQL"><span class="n">18</span><span class="t">Chưa</span></div>
+      <div class="cell s-block" title="19 · Container restart không mất config/audio/data — cần Docker"><span class="n">19</span><span class="t">Chưa</span></div>
+      <div class="cell s-part" title="20 · Browser refresh không làm mất station identity"><span class="n">20</span><span class="t">Partial</span></div>
+      <div class="cell s-pass" title="21 · Double-click/retry không tạo duplicate alarm"><span class="n">21</span><span class="t">Pass</span></div>
+      <div class="cell s-pass" title="22 · Unauthorized API request bị từ chối"><span class="n">22</span><span class="t">Pass</span></div>
+      <div class="cell s-part" title="23 · Password/token không xuất hiện trong log"><span class="n">23</span><span class="t">Partial</span></div>
+      <div class="cell s-block" title="24 · Alarm UI rõ ràng trên màn hình PC — cần màn hình thật"><span class="n">24</span><span class="t">Chưa</span></div>
+      <div class="cell s-block" title="25 · Alarm UI thao tác tốt bằng touch trên Android — cần thiết bị thật"><span class="n">25</span><span class="t">Chưa</span></div>
+    </div>
+
+    <div class="legend">
+      <span><i class="swatch p"></i> PASS mức API/SQLite — 7</span>
+      <span><i class="swatch q"></i> PARTIAL — 8</span>
+      <span><i class="swatch r"></i> Chưa chạy được — 10</span>
+    </div>
+  </section>
+
+  <!-- ============ CLOSING ============ -->
+  <section class="closing">
+    <h2>Đã xong trong đợt 2026-10-09</h2>
+    <p>
+      Hai lỗi chỉ xuất hiện khi chạy thật ngoài <code>localhost</code> đã được sửa và có bằng chứng,
+      nên không cần làm lại:
+    </p>
+    <p>
+      <strong>Phát báo động trên LAN</strong> — <code>crypto.randomUUID()</code> thay bằng
+      <code>randomId()</code> có fallback v4. Đây là lỗi production thật: tài liệu triển khai dùng
+      HTTP thuần nên mọi máy trạm đều gặp.
+    </p>
+    <p>
+      <strong>Trạm hiện OFFLINE không rõ lý do</strong> — server nay đóng bằng <code>1008</code> kèm
+      lý do thay vì HTTP 403 (trình duyệt quy về 1006), client đọc mã đóng và dừng retry vô hạn, hiển
+      thị lỗi kích hoạt cùng nút thử lại. Probe trên uvicorn thật: <strong>5/5 PASS</strong>, so với
+      0/5 trên bản cũ.
+    </p>
+    <p>
+      Kèm theo: backend <strong>52 test PASS</strong>, frontend <strong>8 PASS</strong>,
+      <code>npm run build</code> <strong>PASS</strong>. Không đổi schema, không có migration mới.
+    </p>
+  </section>
+
+  <p class="sources">
+    Nguồn: <code>project.md</code> §40–48 · <code>agent_changelog.md</code> · <code>docs/production_deployment.md</code> ·
+    <code>docs/testing_guide.md</code> · kiểm tra trực tiếp <code>docker info</code>, <code>nginx/default.conf</code>,
+    <code>docker-compose.yml</code> và test suite ngày 2026-10-09.
+    Kết luận: <strong>không production-ready</strong> khi còn chặn cứng hoặc nghiệm thu thiết yếu chưa có bằng chứng.
+  </p>
+
+</div>

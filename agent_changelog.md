@@ -6,6 +6,109 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-09 — Tổng hợp phiên: từ lỗi thực địa LAN tới hạ tầng kiểm thử
+
+Phiên này bắt đầu bằng việc chạy thử LAN nhiều thiết bị và kết thúc ở hạ tầng kiểm thử. Ba đợt dưới đây đi theo đúng trình tự đó; mục này tóm tắt mạch xử lý để đọc liền lạc.
+
+**Bối cảnh.** Chạy hệ thống ở dev mode (`uvicorn` + Vite) để nhiều thiết bị cùng LAN đăng nhập thử. Hai lỗi lộ ra chỉ vì truy cập từ máy khác qua `http://<LAN-IP>:5173`, không phải `localhost`.
+
+**Đợt 1 — lỗi thực địa.** `crypto.randomUUID()` chỉ tồn tại trong secure context (HTTPS hoặc `localhost`), nên mọi máy trạm thật gặp `crypto.randomUUID is not a function`; thay bằng `randomId()` có fallback. Cùng lúc, WS gateway từ chối credential bằng `close()` trước `accept()` khiến ASGI trả HTTP 403 và trình duyệt quy về mã đóng 1006 không kèm lý do — credential sai **không phân biệt được** với mất mạng, nên trạm thử lại vô hạn trong im lặng. Sửa thành `accept()` rồi `close(1008, reason)`, và phía client dừng vòng retry để báo rõ. Bằng chứng trước/sau trên uvicorn thật: **0/5 → 5/5** đường từ chối trả 1008 kèm lý do.
+
+**Đợt 2 — kiểm chứng PostgreSQL thật.** Dựng PostgreSQL 16.15 bằng Docker để gỡ caveat "toàn bộ test mới chỉ chạy trên SQLite". `alembic upgrade head` chạy **5/5 migration** trên schema sạch (lần đầu tiên trên PostgreSQL) và toàn bộ suite **52 passed**. Phát hiện kèm theo: harness test không chạy nổi trên PostgreSQL pool thật — **12 failed / 10 passed / 30 errors** — vì `TestClient` và pytest-asyncio dùng event loop khác nhau, khiến connection dùng chéo loop.
+
+**Đợt 3 — vá harness và gỡ lỗi chặn CI.** Sửa tận gốc bằng `pytest.ini` (ghim loop ở mức session) và chuyển hai test WebSocket sang uvicorn thật. Trong lúc kiểm chứng, phát hiện thêm một lỗi **có từ trước**: CI gọi `pytest tests -v`, cách gọi này không thêm thư mục hiện hành vào `sys.path` nên job backend chết ngay ở `ModuleNotFoundError: No module named 'app'` — **chưa từng chạy được test nào**. CI nay chạy trên PostgreSQL, và cả ba job đã được chạy tay xác nhận xanh.
+
+**Còn lại.** Ba chặn cứng của Cổng 1 chưa gỡ: chưa có lần chạy thật trên GitHub Actions (mới chạy tay mô phỏng), chưa chứng minh backup/restore, chưa dựng stack production bằng `docker compose up`. Chi tiết từng đợt ở ba entry dưới.
+
+## 2026-10-09 — Vá harness test: chạy được trên PostgreSQL và gỡ lỗi chặn CI
+
+Tiếp nối đợt kiểm chứng PostgreSQL ngay dưới. Đợt đó phát hiện harness test không chạy nổi trên PostgreSQL pool thật; đợt này sửa tận gốc và tìm thêm một lỗi khiến job CI **chưa từng** chạy được.
+
+### Thay đổi
+
+- `backend/pytest.ini` (mới) — ba dòng, mỗi dòng gỡ một lỗi thật:
+  - `pythonpath = .`: CI gọi `pytest tests -v`, cách gọi này **không** thêm thư mục hiện hành vào `sys.path` (khác `python -m pytest`). Thiếu dòng này, `tests/conftest.py` chết ngay khi import: `ModuleNotFoundError: No module named 'app'` → job backend không chạy được test nào. Lỗi này **có từ trước**, chỉ không lộ ra vì mọi lần chạy cục bộ đều dùng `python -m pytest`.
+  - `asyncio_default_fixture_loop_scope` / `asyncio_default_test_loop_scope = session`: pytest-asyncio 1.x mặc định tạo event loop mới cho mỗi test function; connection PostgreSQL nằm lại trong pool thuộc loop cũ → `got Future attached to a different loop`, `/api/health` trả `database:error` dù DB khoẻ.
+- `backend/tests/live_server.py` (mới): context manager chạy **uvicorn thật** trên một database riêng (lấy `LIVE_TEST_DATABASE_URL` nếu có, không thì SQLite tạm). Bắt buộc phải là server thật vì `TestClient` tự dựng event loop riêng qua `anyio.from_thread.BlockingPortal` — chính là nguồn xung đột loop — và vì mã đóng 1008 so với HTTP 403 do ASGI server quyết định.
+- `tests/test_production_lifecycle.py::test_station_ws_rejects_missing_wrong_credentials` và `tests/test_spec_v3_all.py::test_sec_2_dashboard_ws_auth_validation`: chuyển từ `TestClient` sang uvicorn thật + client `websockets`. Vẫn khẳng định đúng `code == 1008` và có `reason`.
+- `.github/workflows/ci.yml`: `DATABASE_URL` chuyển từ SQLite sang **PostgreSQL** (cùng engine với production), thêm bước tạo database `redcode_live` riêng cho live transport để không tranh chấp với phần còn lại của suite.
+
+### Commands/bằng chứng thực chạy
+
+PostgreSQL 16.15 thật (container tạm, **đã xoá sau khi đo**); `metabase`/`c-mssql` không bị đụng.
+
+- `pytest tests -v` — **đúng lệnh CI**, chạy trên PostgreSQL với pool thật, có `pytest.ini`: **52 passed** (48.31s).
+- `pytest tests/` trên SQLite: **52 passed** (61.22s) — không regression.
+- `LIVE_TEST_DATABASE_URL` trỏ database riêng: **1 passed**, log `Live transport: 100 sockets x 10 alarms; lost=0 duplicate=0; batch latency p50=0.069s p95=2.002s max=2.002s`.
+- Frontend: `npm test` **8 passed**; `npm run build` **PASS** (283.35 kB js / 29.14 kB css).
+- Job `docker` của CI (lần đầu được kiểm chứng): `docker build -f backend/Dockerfile` **PASS**, `docker build -f nginx/Dockerfile` **PASS**. Image `redcode-api:ci` và `redcode-nginx:ci` đã xoá sau khi build.
+- Trước khi sửa, cùng lệnh `pytest tests -v` trên PostgreSQL cho **12 failed / 10 passed / 30 errors**; và `pytest.exe tests` (không qua `python -m`) chết ở conftest với `ModuleNotFoundError: No module named 'app'`.
+
+### Giới hạn
+
+- **Chưa có lần chạy nào trên GitHub Actions.** Toàn bộ bằng chứng trên là chạy tay mô phỏng đúng lệnh CI. Cổng 1 blocker "CI chưa có bằng chứng chạy thật" **vẫn mở**.
+- Hai test WebSocket giờ khởi động một uvicorn riêng nên chậm hơn (2 test ~12s thay vì tức thời).
+- `test_live_transport.py` vẫn dùng biến `LIVE_TEST_DATABASE_URL`; nếu biến này trỏ vào cùng database với `DATABASE_URL` thì server con có thể tranh chấp với suite — CI đã tách bằng database `redcode_live`.
+- Không thay đổi schema, không có migration mới. Ảnh hưởng duy nhất tới code sản phẩm là **không có** — toàn bộ thay đổi nằm ở hạ tầng test.
+
+## 2026-10-09 — Kiểm chứng PostgreSQL thật: Alembic, schema alignment và toàn bộ 52 test
+
+Đợt này **không sửa code ứng dụng**. Mục đích: gỡ caveat "toàn bộ test mới chỉ chạy trên SQLite" và lấy bằng chứng migration chạy được trên PostgreSQL — hai blocker của Cổng 1 trong `docs/production-readiness.html`.
+
+### Thực hiện
+
+- Trước đợt này Docker engine **chưa chạy** trên máy (`docker info` báo `dockerDesktopLinuxEngine: The system cannot find the file specified`), là một chặn cứng của Cổng 1. Trong phiên engine đã lên: Server Docker Desktop 4.50.0, Engine 28.5.1, `docker info` thành công, Compose v2.40.3-desktop.1 → **chặn cứng đó được gỡ**, thay bằng việc "dựng stack production" ở mức còn-thiếu.
+- Container **tạm** `redcode-pgtest` (`postgres:16-alpine`, PostgreSQL **16.15**), cổng **5433** (1433 đã bị `c-mssql` chiếm), không dùng named volume; **đã xoá container sau khi đo xong**. `metabase` và `c-mssql` không bị đụng tới.
+- Cấu hình truyền qua biến môi trường `DATABASE_URL` trong từng lệnh; **không** sửa `.env`, không sửa file nào của dự án.
+
+### Commands/bằng chứng thực chạy
+
+- `alembic upgrade head` trên schema PostgreSQL sạch: **5/5 migration PASS** (`8280022f67e9` → `20261006_runtime` → `20261006_validity` → `20261007_permissions` → `20261007_integrations`), log `Context impl PostgresqlImpl` + `Will assume transactional DDL`.
+- `pytest tests/` trên PostgreSQL: **52 passed** (67.76s). Trong đó `test_alembic_upgrade_and_schema_alignment` khẳng định mọi cột ORM đều tồn tại trong schema PG thật → **schema alignment đã được xác minh trên PostgreSQL**, không chỉ SQLite.
+- `test_outbox_claim_crash_recovery_and_duplicate_claim` — test từng fail vì `sqlite3.OperationalError: database is locked` khi chạy gộp — **PASS trên PostgreSQL**.
+
+### Phát hiện: harness test không chạy được trên PostgreSQL pool thật
+
+Chạy thẳng `pytest tests/` với `app/database.py` nguyên trạng (PostgreSQL dùng pool thật `pool_size=25`) cho **12 failed, 10 passed, 30 errors**. Nguyên nhân **không phải** code ứng dụng:
+
+- `tests/conftest.py` và fixture trong `tests/test_redcode_core.py` khai báo `scope="module"`, nhưng **pytest-asyncio 1.4.0** mặc định tạo **event loop mới cho mỗi test function**. Với SQLite, `NullPool` không giữ connection nên vô hại; với PostgreSQL, connection nằm lại trong pool thuộc loop cũ → `RuntimeError: ... got Future ... attached to a different loop`, khiến `/api/health` trả `database: "error"`.
+- **Chứng minh bằng thí nghiệm tách biệt:** ép `NullPool` cho PostgreSQL (sửa tạm `app/database.py`, **đã revert — `git status` xác nhận `database.py` sạch**) → **52 passed**. Vậy code ứng dụng tương thích PostgreSQL hoàn toàn; chỉ harness vướng.
+- **Bản sửa khả thi đã kiểm chứng (không sửa file nào):** `pytest -o asyncio_default_fixture_loop_scope=session -o asyncio_default_test_loop_scope=session` → **50 passed**, hết toàn bộ 30 errors. Hai test còn lại (`test_station_ws_rejects_missing_wrong_credentials`, `test_sec_2_dashboard_ws_auth_validation`) fail vì dùng `TestClient` đồng bộ, vốn mở event loop riêng qua `anyio.from_thread.BlockingPortal` → vẫn lỗi loop.
+
+### Giới hạn
+
+- Bản sửa harness **chưa áp dụng vào repo** — mới kiểm chứng bằng tuỳ chọn dòng lệnh. Việc thêm `pytest.ini` / chuyển hai test WebSocket sang `httpx.AsyncClient` + `ASGITransport` là thay đổi riêng, chưa làm.
+- Container test đã xoá; image `postgres:16-alpine` (419MB) giữ lại, dùng được cho triển khai thật.
+- Đây **chưa phải** bằng chứng CI: chưa có pipeline nào chạy, mới là lần chạy tay trên PostgreSQL → Cổng 1 blocker #3 vẫn mở.
+- Chưa test backup/restore trên PostgreSQL → Cổng 1 blocker #2 vẫn mở.
+
+## 2026-10-09 — Sửa lỗi LAN thực địa: secure-context UUID và credential trạm bị từ chối
+
+Phát hiện trong đợt chạy thử LAN nhiều thiết bị (dev mode, `uvicorn` + Vite, máy khác truy cập `http://<LAN-IP>:5173`). Hai lỗi đều chỉ xuất hiện ngoài `localhost`, nên không lộ ra trong test trước đó.
+
+### Thay đổi
+
+- `frontend/src/utils/uuid.js` (mới) + `pages/OperatorDashboard.jsx` + `context/WebSocketContext.jsx`: `crypto.randomUUID()` chỉ tồn tại trong secure context (HTTPS hoặc `localhost`). Deployment LAN theo tài liệu là HTTP thuần nên **mọi máy trạm thật** sẽ gặp `crypto.randomUUID is not a function`. Thay bằng `randomId()` có fallback RFC 4122 v4 (`crypto.getRandomValues`, và `Math.random` khi không có Web Crypto). Hai điểm gọi: phát báo động (idempotency key) và TEST KẾT NỐI.
+- `app/main.py`: WS gateway từ chối credential bằng `close()` **trước** `accept()` khiến ASGI trả HTTP 403 cho gói nâng cấp; trình duyệt quy về mã đóng **1006** không kèm lý do, nên credential sai **không phân biệt được** với mất mạng. Thêm `reject_websocket()`: `accept()` rồi `close(1008, reason)` cho toàn bộ đường từ chối (station thiếu/sai token, dashboard thiếu/sai/hết hạn token, user không hợp lệ, client type lạ).
+- `app/main.py`: socket trạm bị thay thế (thiết bị xác nhận lại) đóng bằng `4001 "Station session superseded"` thay vì `1008` — tránh việc UI mới báo "cần xác nhận lại thiết bị" ngay sau khi vừa xác nhận thành công.
+- `context/WebSocketContext.jsx`: `ws.onclose` đọc `event.code`; gặp `1008` thì **dừng vòng retry** và đặt `activationError` (tách `station` / `dashboard`), thay vì thử lại vô hạn trong im lặng. Thêm `retryConnection()` để thử lại thủ công sau khi xác nhận lại thiết bị hoặc đăng nhập lại; `connect()` và `synchronize()` dừng khi đang bị chặn; `onopen` xóa lỗi. `testConnection()` trả thông báo thật thay cho "Trạm chưa kết nối WebSocket".
+- `pages/ReceiverStationView.jsx`: hiển thị khối lỗi kích hoạt (lý do server trả về + cách xử lý + nút THỬ LẠI), tự mở lại phần chọn trạm, và dòng trạng thái phân biệt "BỊ MÁY CHỦ TỪ CHỐI" với "OFFLINE".
+
+### Commands/bằng chứng thực chạy
+
+Windows 11, Python 3.14 `venv`, Node 24; mọi test chạy trên DB SQLite tạm trong `%TEMP%`, **không** đụng `backend/redcode.db` của dự án.
+
+- Probe trên **uvicorn thật** (`tests/ws_reject_probe.py`, WebSocket client `websockets` 17.2): **5/5** đường từ chối trả `1008` kèm lý do đọc được. Cùng probe chạy trên `main.py` của `HEAD` (stash bản sửa) cho **0/5** — tất cả `HTTP 403`. Đây là bằng chứng trước/sau.
+- Backend: từng suite chạy riêng trên DB tạm sạch — `test_production_lifecycle` **12 passed**, `test_spec_v3_all` **13**, `test_redcode_core` **8**, `test_spec_v2_features` **4**, `test_review_regressions` **4**, `test_optional_setup` **3**, `test_station_validity` **2**, `test_alembic_migrations` **2**, `test_live_transport` **1**, `test_50_concurrent_clients` **2**, `test_100_stations_load` **1**. Tổng **52 passed**.
+- Hai test cũ đã siết lại: `test_station_ws_rejects_missing_wrong_credentials` và `test_sec_2_dashboard_ws_auth_validation` giờ khẳng định `code == 1008` **và** có `reason`, thay vì chỉ khẳng định có disconnect.
+- Frontend `npm test`: **8 passed**. `npm run build`: **PASS**.
+
+### Giới hạn
+
+- Lỗi `database is locked` khi chạy **gộp nhiều suite trong một tiến trình** trên SQLite (xảy ra ở `test_outbox_claim_crash_recovery_and_duplicate_claim`, suite này chạy riêng thì PASS). Đây là giới hạn SQLite đa kết nối, không phải regression của đợt này; CI dùng PostgreSQL nên không gặp. **Cập nhật 2026-10-09:** caveat này nay đã được kiểm chứng lại trên PostgreSQL thật — xem entry phía trên.
+- Chưa có browser/thiết bị thật tự động nghiệm thu; luồng "xác nhận lại thiết bị → tự kết nối lại" mới được kiểm ở mức code + probe giao thức.
+- Không thay đổi schema, không có migration mới. Finding R07/R08 phần "station 401 hiển thị lỗi activation" nay đã có code và test; các phần còn lại của R07/R08 giữ nguyên PARTIAL.
+
 ## 2026-10-07 — Cài trước/kết nối DB sau và optional n8n
 
 - Docker launcher `start_server.py` chọn bootstrap app độc lập DB khi DATABASE_URL trống; setup token lấy tại server, API test/complete yêu cầu token, PostgreSQL-only. Complete chạy Alembic + production Admin seed trước lưu runtime config atomic mode 0600 rồi chuyển app. Setup endpoint không còn hoạt động khi cấu hình đã hoàn tất.
@@ -121,8 +224,8 @@ Chi tiết scope và kết quả được giữ dưới đây. Sau đợt này n
 | R04 Cancel | FIXED ở code/test | Gửi ALARM_CANCELLED tới target station và dashboard, cancel idempotent, không enqueue n8n cancellation. API regression xác nhận target gửi và outbox chỉ created. Cần browser/device confirmation. |
 | R05 Heartbeat | PARTIAL | Timeout đóng socket và dùng identity; heartbeat socket cũ bị từ chối; startup reset trạng thái persisted; client ACK watchdog. Chưa có network race/restart test thực. |
 | R06 Audio | PARTIAL | Reject không báo successful start/completion; session guard; remote tone test không ngắt alarm; resume awaited; local test nghe được; unlock retry head. 3 JS tests pass. Chưa có admin test-result ACK/UNKNOWN enum và thiết bị thực. |
-| R07 Kiosk | FIXED ở code/API | POST activate bằng station credential, nhập station code trực tiếp, không bắt user JWT/list station; station 401 không redirect login. API regression pass. Cần browser boot/refresh. |
-| R08 Reconnect/dismiss | PARTIAL | Auth token là dependency socket, cleanup guards, watchdog; pending dismiss lưu localStorage/retry lúc sync; dismissed/cancel tombstones. Cần browser integration, revoke dashboard socket ngay, identity-specific pending action cleanup. |
+| R07 Kiosk | FIXED ở code/API | POST activate bằng station credential, nhập station code trực tiếp, không bắt user JWT/list station; station 401 không redirect login. API regression pass. **2026-10-09**: credential bị từ chối nay đóng bằng 1008 kèm lý do (trước là HTTP 403 → trình duyệt thấy 1006), client dừng retry và hiển thị lỗi activation; probe uvicorn thật 5/5 PASS. Cần browser boot/refresh. |
+| R08 Reconnect/dismiss | PARTIAL | Auth token là dependency socket, cleanup guards, watchdog; pending dismiss lưu localStorage/retry lúc sync; dismissed/cancel tombstones. **2026-10-09**: client phân biệt được từ chối credential với mất mạng nên hết retry vô hạn; socket bị thay thế đóng bằng 4001 tách khỏi 1008. Cần browser integration, revoke dashboard socket ngay, identity-specific pending action cleanup. |
 | R09 Outbox | PARTIAL | locked_at lease, reclaim abandoned PROCESSING, SQL due filter, exponential capped retry, stable Idempotency-Key, audit failed attempt. Regression reclaim pass. Còn multi-worker locking, admin retry/backlog/config DB. |
 | R10 Permission/idempotency | PARTIAL | API effective types, viewer empty, backend missing permission deny; admin khoa checkboxes; conflict khi key khác actor/payload; frontend giữ request key retry. Còn user-specific permissions, DB key scoped và migration JSON legacy. |
 | R11 Audit/state | PARTIAL | Typed allowlist/target/current socket/active alarm/terminal guard, timestamp ACK, station ID connect logs; configuration action audit không chứa body secrets. Còn before/after transactional config audit, lỗi hệ thống đầy đủ, audio-test ACK. |
