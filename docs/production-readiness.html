@@ -523,6 +523,15 @@
             <code>app/config.py</code> sẽ chặn ngay lúc khởi động. Đó là thiết kế đúng, không phải lỗi.
             Chưa lần nào chạy stack với <code>.env</code> production và PostgreSQL thật.
           </p>
+          <p>
+            <strong>Cập nhật 2026-10-11 (đợt rà soát):</strong> hình dạng của
+            <code>/api/health</code> đã đổi, nên lần dựng stack tới cần đọc kỹ hơn: <code>status</code>
+            nay là <em>readiness</em> (gộp database <em>và</em> vòng giám sát nhịp tim) và có thêm
+            <code>liveness</code>; <code>websocket</code> có ba giá trị <code>ok</code> /
+            <code>degraded</code> / <code>not_started</code>. Hai endpoint chẩn đoán
+            <code>/api/health/db</code> và <code>/api/health/websocket</code> nay <strong>yêu cầu token
+            ADMIN</strong> — nếu có probe hạ tầng đang gọi chúng, probe đó sẽ nhận 401.
+          </p>
         </div>
         <p class="action"><b>Việc cần</b>Chuẩn bị <code>.env</code> production hợp lệ trỏ PostgreSQL thật, rồi chạy <code>docker compose config --quiet</code> → <code>build</code> → <code>up -d</code> → <code>ps</code> → <code>nginx -t</code> → <code>curl /api/health</code> → <code>curl -sI /assets/audio/&lt;tep&gt;.wav</code>.</p>
       </li>

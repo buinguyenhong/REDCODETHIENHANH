@@ -28,6 +28,7 @@ export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState('monitor'); // monitor | alarmTypes | stations | receiverGroups | departments | users | audio | audit
   const [stations, setStations] = useState([]);
   const [health, setHealth] = useState(null);
+  const [outbox, setOutbox] = useState(null);
   const [departments, setDepartments] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [alarmTypes, setAlarmTypes] = useState([]);
@@ -106,12 +107,17 @@ export default function AdminDashboard() {
 
   const loadMonitorData = async () => {
     try {
-      const [stData, hData] = await Promise.all([
+      const [stData, hData, sysData] = await Promise.all([
         api.getStations(),
         api.getHealth(),
+        // /system/status là endpoint ADMIN: cho biết còn bao nhiêu thông báo n8n đã
+        // bỏ hẳn. Không có nó, một thông báo gửi thất bại vĩnh viễn không hiện ra ở
+        // đâu cả ngoài bảng system_events.
+        api.getSystemStatus().catch(() => null),
       ]);
       setStations(stData);
       setHealth(hData);
+      setOutbox(sysData?.notification_outbox || null);
     } catch (e) {
       console.error('Lỗi cập nhật giám sát:', e);
     }
@@ -542,8 +548,20 @@ export default function AdminDashboard() {
               <span>REDCODE CORE</span>
               <Activity className="w-4 h-4 text-emerald-600" />
             </div>
-            <div className="text-xl font-black text-slate-900">{health?.status === 'ok' ? 'HOẠT ĐỘNG' : 'LỖI'}</div>
-            <div className="text-xs text-emerald-700 font-mono mt-0.5">FastAPI Engine OK</div>
+            <div className="text-xl font-black text-slate-900">
+              {health?.status === 'ok' ? 'HOẠT ĐỘNG' : health?.status === 'degraded' ? 'SUY GIẢM' : 'LỖI'}
+            </div>
+            {/* status là readiness: suy giảm nghĩa là vòng giám sát nhịp tim đã
+                chết, nên trạm rút điện sẽ hiện ONLINE mãi và báo động hết hạn
+                không được kết thúc. Trước đây thẻ này chỉ có hai trạng thái nên
+                hiện "HOẠT ĐỘNG" trong đúng ca đó. */}
+            <div className="text-xs text-slate-500 font-mono mt-0.5">
+              {health?.websocket === 'degraded'
+                ? 'MẤT GIÁM SÁT NHỊP TIM'
+                : health?.websocket === 'not_started'
+                  ? 'GIÁM SÁT CHƯA CHẠY'
+                  : `Giám sát nhịp tim OK · ${health?.liveness || 'ok'}`}
+            </div>
           </div>
 
           <div className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm">
@@ -572,7 +590,14 @@ export default function AdminDashboard() {
               <Share2 className="w-4 h-4 text-purple-600" />
             </div>
             <div className="text-xl font-black text-slate-900 uppercase">{health?.n8n || 'DEGRADED'}</div>
-            <div className="text-xs text-slate-500 font-mono mt-0.5">Non-blocking background</div>
+            {/* n8n là đường phụ nên số này KHÔNG được đổi màu cảnh báo đỏ: báo
+                động nội bộ không đi qua đây. Nhưng thông báo đã bỏ hẳn vẫn phải
+                nhìn thấy được, nếu không thì nó chết im lặng trong system_events. */}
+            <div className="text-xs text-slate-500 font-mono mt-0.5">
+              {outbox?.exhausted
+                ? `${outbox.exhausted} thông báo bỏ hẳn · ${outbox.retryable_failed || 0} chờ thử lại`
+                : 'Non-blocking background'}
+            </div>
           </div>
         </div>
 

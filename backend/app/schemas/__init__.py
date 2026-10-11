@@ -297,8 +297,18 @@ class AudioFileOut(BaseModel):
 
 # --- Health ---
 class HealthResponse(BaseModel):
+    # status là READINESS: hệ thống còn làm được việc của nó không, gộp cả database
+    # lẫn vòng giám sát nhịp tim. Giữ tên trường cũ để probe và dashboard hiện có
+    # không phải đổi.
     status: str
+    # liveness tách riêng khỏi status vì hai câu hỏi này dẫn tới hai hành động khác
+    # nhau: liveness hỏng thì restart tiến trình; readiness hỏng thì sửa thành phần
+    # đang suy giảm (database, hoặc vòng giám sát nhịp tim).
+    liveness: str = "ok"
     database: str
+    # "ok" (đang chạy) | "degraded" (đã bật rồi chết) | "not_started" (chưa bật
+    # hoặc đã dừng theo lệnh). Ba giá trị, vì "đã bật rồi chết" là sự cố còn
+    # "chưa bật" thì không.
     websocket: str
     n8n: str
     active_stations: int

@@ -6,6 +6,101 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-11 — Sửa 5 phát hiện rà soát (2 P1 + 3 P2) về tính trung thực của trạng thái, health và outbox
+
+Yêu cầu: người dùng dán danh sách 5 phát hiện từ một đợt rà soát (2 P1, 3 P2) và yêu cầu xác minh/sửa. Đã đọc lại code thật cho từng phát hiện trước khi sửa; **cả 5 đều đúng** với code hiện tại. Đối chiếu thêm với `project.md` R11/R14/R15 — đặc tả vốn đã yêu cầu "Health/readiness phản ánh DB/tasks/recovery; n8n degraded không làm core failed", tức code đang thiếu so với chính spec của dự án, không phải phát sinh phạm vi mới.
+
+### Phát hiện và cách sửa
+
+**P1 — `backend/app/api/stations.py`: nhịp tim HTTP vẫn ghi `status = ONLINE` khi không có WebSocket.** Phát hiện đúng: endpoint đã tính đúng `ws_connected` nhưng dòng cuối vẫn luôn ghi `ONLINE`. Sửa: `station.status` giờ là `ONLINE if ws_connected else OFFLINE`; phản hồi thêm trường `device_reachable: True` để tách bạch hai câu hỏi khác nhau — *thiết bị còn gọi được API* và *thiết bị có kênh nhận báo động* — mà trước đây bị gộp làm một. `last_seen_at` vẫn được ghi, nên thông tin "thiết bị còn sống" không mất.
+
+**P1 — `backend/app/core/websocket_manager.py`: monitor ngắt trạm theo ảnh chụp cũ (race).** Phát hiện đúng: `_check_timeouts` chụp danh sách quá hạn dưới lock rồi đóng socket ngoài lock mà không kiểm lại. Sửa: tách vòng đóng ra `_enforce_timeouts(timed_out, threshold_seconds)`; trước mỗi lần ngắt, hàm này lấy lại `self._lock` và **kiểm lại cả danh tính socket (`current_ws is ws`) lẫn mốc nhịp tim mới nhất**; bỏ qua nếu socket đã bị phiên mới thay, nếu không còn dấu vết nhịp tim, hoặc nếu nhịp tim mới hơn ngưỡng. Đây là kênh nhận báo động duy nhất, nên ngắt nhầm một trạm đang sống làm trạm đó im lặng cho tới khi tự kết nối lại.
+
+**P2 — `backend/app/api/health.py`: health tổng thể che mất lỗi giám sát.** Phát hiện đúng: `overall_status` chỉ dựa vào database, nên `status` vẫn là `ok` khi vòng giám sát đã chết. Sửa theo đúng hai phương án phát hiện đề nghị — **tách liveness và readiness**: thêm trường `liveness` (tiến trình còn phục vụ được request) và để `status` (readiness) gộp cả database **và** vòng giám sát. Ghi nhận thêm rằng vòng monitor chết không chỉ làm mù trạng thái trạm mà còn **ngừng gọi `expire_alarms()`**, nên báo động ACTIVE hết hạn không được kết thúc — mức nghiêm trọng cao hơn mô tả trong phát hiện.
+
+Đồng thời tách `websocket` thành **ba** giá trị thay vì hai: `ok` / `degraded` (đã bật rồi chết) / `not_started` (chưa bật, hoặc đã dừng theo lệnh). Cần ba giá trị vì "chưa từng giám sát" không phải sự cố, còn "đã giám sát rồi mất" thì có — gộp hai thứ làm một sẽ khiến mọi lần đọc health trong lúc khởi động đều báo suy giảm và làm loãng đúng ca cần phát hiện. Thêm `ConnectionManager._monitor_expected` (bật trong `start_monitor`, hạ trong `stop_monitor`).
+
+**P2 — `backend/app/api/health.py`: health lộ thông tin không cần thiết.** Phát hiện đúng: `/api/health/db` trả nguyên văn `str(e)` của driver (thường chứa host, cổng, tên user, có khi cả chuỗi kết nối) và `/api/health/websocket` trả danh sách mã trạm đang trực; cả hai không có lớp xác thực. Sửa: cả hai endpoint nay `Depends(get_current_active_admin)`. `/api/health/db` giữ chi tiết ở log server (`logger.error(..., exc_info=True)`), phản hồi HTTP chỉ nói `status`/`latency_ms`. `/api/health` công khai vẫn giữ các trường tổng hợp để probe không xác thực dùng được.
+
+**P2 — `backend/app/core/n8n_outbox.py`: không phân biệt được lỗi còn retry với lỗi đã hết lượt.** Phát hiện đúng. Sửa: thêm giá trị trạng thái kết thúc riêng `OutboxStatus.EXHAUSTED`. `FAILED` = lần này lỗi, còn thử lại (luôn có `next_attempt_at`); `EXHAUSTED` = đã bỏ hẳn. Trước đây muốn biết một thông báo đã bỏ hẳn phải suy từ `next_attempt_at IS NULL` — thông tin ngầm, không có truy vấn nào theo trạng thái trả lời được, và nhánh thu hồi lease hết hạn còn ghi cả hai ca thành `FAILED`.
+
+Về **khả năng theo dõi và quy tắc khi bật lại n8n** (phần phát hiện yêu cầu kiểm tra thêm): `GET /api/system/status` (ADMIN) nay trả `notification_outbox` gồm `pending`/`processing`/`sent`/`retryable_failed`/`exhausted` và `exhausted_recent` (kèm `alarm_id`, `last_error`, `attempt_count`); thêm `POST /api/system/outbox/requeue-exhausted` (ADMIN) để phát lại. Quy tắc: worker **không tự phát lại** thông báo đã EXHAUSTED — bật lại n8n không xả một loạt thông báo cũ vào hệ thống nhận; người vận hành quyết định. Gửi lại an toàn về trùng lặp vì mỗi bản ghi giữ nguyên `Idempotency-Key: redcode-outbox-{id}`. Quy tắc này ghi trong docstring đầu `n8n_outbox.py`, trong runbook và trong T08 của hướng dẫn kiểm thử.
+
+**Không cần migration.** `notification_outbox.status` là `String(20)`, `EXHAUSTED` (9 ký tự) vừa. Không đổi schema, không thêm bảng, không đổi chuỗi Alembic (head vẫn `20261007_integrations`).
+
+### File đã sửa
+
+- `backend/app/api/stations.py` — `status` theo `ws_connected`; thêm `device_reachable`.
+- `backend/app/core/websocket_manager.py` — `_enforce_timeouts` kiểm lại danh tính + nhịp tim; `_monitor_expected`; `stop_monitor` hạ cờ.
+- `backend/app/api/health.py` — `liveness`; `status` gộp database + giám sát; `websocket` ba giá trị; hai endpoint con yêu cầu ADMIN; bỏ `detail` thô.
+- `backend/app/schemas/__init__.py` — `HealthResponse` thêm `liveness`.
+- `backend/app/models/__init__.py` — `OutboxStatus.EXHAUSTED`.
+- `backend/app/core/n8n_outbox.py` — dùng `EXHAUSTED`; thu hồi lease rồi chốt `EXHAUSTED` cho bản ghi đã chạm trần (bắt cả dữ liệu cũ còn nằm ở `FAILED`); docstring ghi vòng đời và quy tắc bật lại n8n.
+- `backend/app/api/system.py` — `notification_outbox` trong `/system/status`; endpoint `POST /system/outbox/requeue-exhausted`.
+- `frontend/src/pages/AdminDashboard.jsx` — thẻ CORE hiện `HOẠT ĐỘNG`/`SUY GIẢM`/`LỖI` kèm dòng nói rõ tình trạng giám sát nhịp tim; thẻ n8n hiện số thông báo bỏ hẳn / chờ thử lại.
+- `backend/tests/test_review_findings_regressions.py` — **file mới**, 7 test.
+- `backend/tests/test_p0_regressions.py` — cập nhật test health theo hành vi mới (`status` phải là `degraded`); thêm khẳng định `status == OFFLINE` và `device_reachable is True`.
+- `backend/tests/test_spec_v2_features.py` — `test_health_sub_endpoints` nay kiểm cả ca 401 không token rồi gọi bằng token ADMIN.
+- `docs/production_deployment.md`, `docs/production_deployment_flow.md`, `docs/testing_guide.md`, `docs/production-readiness.html` — cập nhật theo hình dạng health mới và quy tắc outbox.
+
+### Test bổ sung
+
+`backend/tests/test_review_findings_regressions.py` — mỗi phát hiện một test khoá hành vi đã sửa:
+
+1. `test_http_heartbeat_without_websocket_never_reports_online` — nhịp tim HTTP không có socket ⇒ `device_reachable=true` nhưng `websocket_connected=false`, `can_receive_alarms=false`, `status=OFFLINE`, cờ audio không được ghi; có socket thật thì mới ONLINE và mới nhận cờ audio.
+2. `test_timeout_enforcement_rechecks_identity_and_freshness` — ba nhánh: nhịp tim mới đến sau ảnh chụp ⇒ không ngắt; socket đã bị phiên mới thay ⇒ không ngắt phiên mới; thật sự quá hạn ⇒ ngắt đúng mã `1011` và gỡ khỏi `active_stations`/`last_heartbeats`.
+3. `test_health_readiness_reflects_dead_monitor` — monitor chết ⇒ `websocket=degraded`, `status=degraded`, `liveness=ok`, `database=ok`.
+4. `test_health_reports_not_started_separately_from_degraded` — chưa bật monitor ⇒ `websocket=not_started`, `status=ok`.
+5. `test_health_diagnostics_require_admin` — không token ⇒ 401; OPERATOR ⇒ 403; ADMIN ⇒ 200 và không có `detail`; `/api/health` công khai không có mã trạm.
+6. `test_exhausted_outbox_row_is_distinct_from_retryable_failure` — còn lượt ⇒ `FAILED` + `next_attempt_at` khác NULL; hết lượt ⇒ `EXHAUSTED` + `next_attempt_at` NULL; chạy lại `process_outbox` **không** claim lại bản ghi đã EXHAUSTED (`attempt_count` không tăng); có bản ghi kiểm toán `N8N_NOTIFICATION_FAILED`.
+7. `test_admin_can_see_and_requeue_exhausted_notifications` — `/system/status` đếm và liệt kê được; OPERATOR bị 403; ADMIN requeue ⇒ về `PENDING`, `attempt_count=0`.
+
+### Commands/bằng chứng thực chạy
+
+```bash
+# Backend, trên DB SQLite tạm mới (KHÔNG dùng backend/redcode.db)
+cd backend
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_final.db" \
+  ../venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+# → 76 passed, 4 warnings in 72.78s
+# (trước đợt này: 69 test; +7 test mới)
+
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_collect.db" \
+  ../venv/Scripts/python.exe -m pytest tests --collect-only -q
+# → 76 tests collected
+
+# Live server thật qua uvicorn (chạy hết lifespan → monitor_expected=True)
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_live.db" \
+  ../venv/Scripts/python.exe -m pytest tests/test_live_transport.py -q
+# → 1 passed in 19.10s
+
+# Frontend
+cd frontend && npm test
+# → tests 19 / pass 19 / fail 0
+npm run build
+# → built in 14.51s; dist/assets/index-ClwcZw-y.js 282.25 kB (gzip 80.03 kB)
+```
+
+**Kiểm chứng rằng 7 test mới thật sự bắt được lỗi** (không phải test trang trí): với mỗi phát hiện, tạm hoàn nguyên **đúng dòng code cũ** trong file nguồn, chạy test tương ứng, rồi trả file về nguyên trạng. Kết quả **5/5 đều FAIL đúng kỳ vọng**:
+
+```text
+[FAIL (dung ky vong)] P1-1 heartbeat HTTP ghi ONLINE khi khong co WebSocket      1 failed in 2.00s
+[FAIL (dung ky vong)] P1-2 ngat tram theo anh chup cu (race voi nhip tim moi)   1 failed in 1.67s
+[FAIL (dung ky vong)] P2-3 health tong the bao ok khi vong giam sat da chet     1 failed in 3.38s
+[FAIL (dung ky vong)] P2-4 health chan doan cong khai, lo chi tiet noi bo       1 failed in 1.71s
+[FAIL (dung ky vong)] P2-5 outbox het luot thu dung chung trang thai FAILED     1 failed in 2.11s
+```
+
+Sau khi chạy xong, `git status` xác nhận các file nguồn chỉ còn đúng các sửa đã dự định (không sót bản hoàn nguyên nào).
+
+### Giới hạn
+
+- **Chưa chạy lại Docker/e2e trong đợt này.** Các bằng chứng Docker (compose build/up, e2e 23/23, restart 8/8, Content-Type audio) trong runbook mục 13 là của lần chạy trước cùng ngày, đã ghi rõ nguồn. Đợt này chỉ chạy pytest/npm.
+- **Chưa kiểm chứng trên PostgreSQL thật**, chưa nghiệm thu thiết bị thật (PC kiosk, tablet Android, Android TV box).
+- **`POST /api/system/outbox/requeue-exhausted` chưa được thử với một n8n thật đang sống lại** — mới kiểm bằng test tự động (trạng thái về `PENDING`, `attempt_count` về 0). Việc n8n khử trùng đúng theo `Idempotency-Key` khi phát lại vẫn chưa có bằng chứng.
+- **Hai endpoint health con nay yêu cầu token ADMIN.** Nếu ở đâu đó có probe hạ tầng đang gọi `/api/health/db` hoặc `/api/health/websocket` không kèm token, probe đó sẽ nhận 401 — cần rà lại khi triển khai. Trong repo hiện tại không có probe nào như vậy (đã grep `docker-compose.yml`, `nginx/`, `.github/workflows/ci.yml`), và frontend gọi `getHealthDb`/`getHealthWebsocket` nhưng không component nào dùng.
+- **Chuyển trạng thái dữ liệu cũ `FAILED` → `EXHAUSTED`** chạy trong `process_outbox` mỗi vòng, nên bản ghi cũ chỉ đổi trạng thái khi n8n được bật (worker thoát sớm khi `N8N_ENABLED=false`). Đây là chủ ý — không đụng dữ liệu khi tính năng đang tắt — nhưng nghĩa là một hệ thống đang tắt n8n sẽ vẫn hiện số `exhausted` cũ bằng 0 cho tới khi bật lại.
+
 ## 2026-10-11 — Tạo lại tài liệu triển khai theo hệ thống hiện tại
 
 Yêu cầu: "tạo lại tài liệu deploy sau đó push code lại".

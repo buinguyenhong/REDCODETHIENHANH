@@ -77,6 +77,8 @@ async def test_http_heartbeat_reports_no_alarm_channel_without_websocket():
         # Không có WebSocket thì không thể nhận báo động, dù nhịp tim vẫn tới.
         assert body['websocket_connected'] is False
         assert body['can_receive_alarms'] is False
+        # Nhưng thiết bị còn gọi được API — hai điều này phải tách bạch.
+        assert body['device_reachable'] is True
 
         async with AsyncSessionLocal() as session:
             stored = (await session.execute(
@@ -85,6 +87,8 @@ async def test_http_heartbeat_reports_no_alarm_channel_without_websocket():
             # Trước đây endpoint ghi websocket_connected=True và status=ONLINE, nên
             # dashboard hiện ONLINE xanh cho thiết bị không bao giờ nhận được báo động.
             assert stored.websocket_connected is False
+            # status phải theo khả năng nhận báo động, không theo "vừa gọi được API".
+            assert stored.status == 'OFFLINE'
             # Cờ sẵn sàng âm thanh cũng không được nhận từ một nhịp tim không có kênh thật.
             assert stored.audio_ready is False
             assert stored.client_ready is False
@@ -404,17 +408,26 @@ async def test_renaming_a_station_code_closes_the_socket_under_the_old_code():
 @pytest.mark.asyncio
 async def test_health_reports_degraded_when_the_heartbeat_monitor_is_down():
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
-        original = manager._monitor_task
+        original_task = manager._monitor_task
+        original_expected = manager._monitor_expected
         try:
-            # Giả lập vòng giám sát đã chết: trạm rút điện sẽ hiện ONLINE mãi mãi.
+            # Giả lập vòng giám sát ĐÃ CHẠY rồi chết: trạm rút điện sẽ hiện ONLINE
+            # mãi mãi, và báo động hết hạn không còn được chuyển sang EXPIRED.
             class Done:
                 def done(self):
                     return True
 
+            manager._monitor_expected = True
             manager._monitor_task = Done()
             body = (await client.get('/api/health')).json()
             assert body['websocket'] == 'degraded'
-            # Trạng thái chung vẫn phải là ok: mất vòng giám sát không làm sập báo động.
-            assert body['status'] == 'ok'
+            # Trạng thái chung phải phản ánh suy giảm này. Trước đây chỉ cần database
+            # "ok" là trả "ok", nên dashboard hiện HOẠT ĐỘNG trong khi hệ thống đã mù
+            # với thiết bị offline — đúng loại hỏng im lặng mà /api/health phải nói ra.
+            assert body['status'] == 'degraded'
+            # Tiến trình vẫn phục vụ được request, nên liveness tách riêng và vẫn ok.
+            assert body['liveness'] == 'ok'
+            assert body['database'] == 'ok'
         finally:
-            manager._monitor_task = original
+            manager._monitor_task = original_task
+            manager._monitor_expected = original_expected

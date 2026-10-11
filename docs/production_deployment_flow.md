@@ -191,7 +191,7 @@ Lệnh curl trên giả định Compose port 80 mặc định; nếu port/entryp
 **Điều kiện qua bước:**
 
 - containers chạy, revision đúng `20261007_integrations`;
-- JSON health có `database: "ok"` **và** `websocket: "ok"` — `websocket: "degraded"` nghĩa là vòng giám sát nhịp tim đã chết, dừng lại và xem log;
+- JSON health có `database: "ok"` **và** `websocket: "ok"`. `websocket: "degraded"` nghĩa là vòng giám sát nhịp tim **đã bật rồi chết** — `status` cũng thành `degraded`, không trạm nào được đánh offline nữa và báo động hết hạn không được kết thúc; dừng lại và xem log. `websocket: "not_started"` nghĩa là chưa chạy tới bước bật monitor — bình thường vài giây đầu, đứng yên thì là lỗi;
 - log backend có `Station offline monitor active` và `Durable notification outbox worker active`;
 - audio trả `Content-Type: audio/wav` (không phải `application/octet-stream`) — sai kiểu media thì loa không kêu dù UI hiện báo động;
 - giao diện qua Nginx mở được.
@@ -307,7 +307,10 @@ Không chạy migration song song với API đang phục vụ trong quy trình n
 | Build | Trước migration | Registry/package access, source/release | Cả images đúng release build PASS |
 | Migration | Giữ backend dừng | Alembic logs, revision/schema/quyền | Fix hoặc restore đã kiểm chứng |
 | Startup/502 | Trước cấu hình nghiệp vụ | Backend logs, revision, proxy/DNS | Health + UI + API qua Nginx đạt |
-| Health `websocket: degraded` | Trước cấu hình nghiệp vụ | Log backend, vòng monitor nhịp tim | Restart backend và health trả `ok`; coi mọi ONLINE hiện tại là không đáng tin |
+| Health `websocket: degraded` | Trước cấu hình nghiệp vụ | Log backend, vòng monitor nhịp tim | Restart backend và health trả `status: ok`; coi mọi ONLINE hiện tại là không đáng tin |
+| Health `websocket: not_started` đứng yên | Trước cấu hình nghiệp vụ | Log backend có `Station offline monitor active` chưa | Restart backend; nếu vẫn vậy thì lifespan không chạy hết |
+| `/api/health/db` hoặc `/health/websocket` trả 401/403 | Khi dựng probe hạ tầng | Token ADMIN | Cấp token ADMIN cho probe, hoặc chỉ đọc `/api/health` công khai |
+| n8n có thông báo bỏ hẳn | Khi bật lại n8n | `GET /api/system/status` → `notification_outbox.exhausted` | Xem `exhausted_recent`, rồi `POST /api/system/outbox/requeue-exhausted` khi n8n đã sống lại |
 | Audio sai Content-Type | Trước nghiệm thu trạm | `curl -sI` asset, config Nginx | Asset trả đúng kiểu media |
 | Trạm không kết nối | Trước nghiệm thu trạm | Origin/profile, enabled/token rotation, WS Upgrade, mã đóng `1008`/`4001` | ONLINE và PING/PONG đúng |
 | Không nghe loa | Không đóng audio acceptance | Asset/autoplay/volume/mute/cáp loa | Nghe thực và retry/lifecycle đúng |
@@ -339,7 +342,7 @@ Schema forward-only: không `alembic downgrade`, không tự drop tables. Trư�
 - [ ] `.env` production riêng, không demo/wildcard/secret mẫu; `INITIAL_ADMIN_PASSWORD` có cho lần bootstrap đầu.
 - [ ] External network + TLS/proxy WebSocket đúng.
 - [ ] Build PASS; migrate PASS khi API dừng; `alembic current` = `20261007_integrations`.
-- [ ] Containers + JSON health (`database: ok`, `websocket: ok`) + UI/API/WS qua Nginx đạt.
+- [ ] Containers + JSON health (`status: ok`, `database: ok`, `websocket: ok`) + UI/API/WS qua Nginx đạt. Chẩn đoán sâu (`/api/health/db`, `/api/health/websocket`) cần token ADMIN.
 - [ ] Asset audio trả đúng `Content-Type` (`audio/wav`, không phải `application/octet-stream`).
 - [ ] Khoa/users/stations/groups/audio/types/permissions đúng mapping; mỗi alarm type có ≥1 tệp âm thanh.
 - [ ] Từng máy đã xác nhận, nghe loa thật, reboot/refresh/reconnect đạt.

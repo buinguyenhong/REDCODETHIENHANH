@@ -21,13 +21,23 @@ class ConnectionManager:
         self.last_heartbeats: Dict[str, datetime] = {}
         # Background task for monitoring heartbeat timeout
         self._monitor_task: Optional[asyncio.Task] = None
+        # start_monitor() đã được gọi lần nào chưa. Phân biệt "chưa từng giám sát"
+        # (app đang khởi động, hoặc test dựng app không qua lifespan) với "đã giám
+        # sát rồi mất" — chỉ vế sau mới là sự cố cần báo động.
+        self._monitor_expected: bool = False
         self._lock = asyncio.Lock()
 
     async def start_monitor(self, offline_threshold_seconds: int = 15):
+        self._monitor_expected = True
         if self._monitor_task is None or self._monitor_task.done():
             self._monitor_task = asyncio.create_task(self._check_timeouts(offline_threshold_seconds))
 
     async def stop_monitor(self):
+        # Dừng theo lệnh thì không còn "phải đang chạy" nữa. Không hạ cờ này, một
+        # lần khởi động rồi tắt (ví dụ lifespan của test chạy trong cùng tiến trình)
+        # sẽ để lại trạng thái "đã chạy rồi chết" và mọi lần đọc /api/health sau đó
+        # đều báo suy giảm — che mất ca suy giảm thật.
+        self._monitor_expected = False
         if self._monitor_task and not self._monitor_task.done():
             self._monitor_task.cancel()
             try:
@@ -219,6 +229,16 @@ class ConnectionManager:
         return {"delivered": delivered, "targets": len(target_station_codes) if target_station_codes is not None else len(recipients)}
 
     @property
+    def monitor_expected(self) -> bool:
+        """start_monitor() đã từng được gọi chưa.
+
+        Dùng để tách "chưa từng giám sát" khỏi "đã giám sát rồi chết". Không có
+        cờ này thì /api/health buộc phải gộp hai thứ làm một, và mọi tiến trình
+        chưa chạy tới bước start_monitor đều bị báo suy giảm.
+        """
+        return self._monitor_expected
+
+    @property
     def monitor_running(self) -> bool:
         """Vòng giám sát nhịp tim còn sống hay không.
 
@@ -292,6 +312,35 @@ class ConnectionManager:
             except Exception as e:
                 logger.error(f"Error updating station status in DB for {station_code}: {e}")
 
+    async def _enforce_timeouts(self, timed_out: List[tuple], threshold_seconds: int):
+        """Ngắt các trạm quá hạn, kiểm tra lại trạng thái ngay trước khi ngắt.
+
+        ``timed_out`` là một **ảnh chụp** tại thời điểm quét. Giữa lúc chụp và lúc
+        ngắt, một nhịp tim mới có thể đã tới — hoặc trạm đã kết nối lại bằng socket
+        khác. Ngắt theo ảnh chụp cũ sẽ cắt đúng trạm vừa chứng minh mình còn sống,
+        và vì WebSocket là kênh nhận báo động duy nhất, trạm đó im lặng cho tới khi
+        client tự kết nối lại. Vì vậy phải kiểm lại **cả danh tính socket lẫn mốc
+        nhịp tim mới nhất** dưới lock trước khi quyết định.
+        """
+        for code, ws in timed_out:
+            async with self._lock:
+                current_ws = self.active_stations.get(code)
+                last_seen = self.last_heartbeats.get(code)
+                # Socket đã bị thay bằng phiên mới, hoặc không còn dấu vết nhịp tim:
+                # ảnh chụp này đã cũ, không có gì để ngắt.
+                if current_ws is not ws or last_seen is None:
+                    continue
+                # Nhịp tim mới hơn ngưỡng nghĩa là trạm vẫn khoẻ — bỏ qua.
+                if (datetime.now(timezone.utc) - last_seen).total_seconds() <= threshold_seconds:
+                    continue
+
+            logger.warning(f"Station {code} timed out ({threshold_seconds}s with no heartbeat). Marking offline.")
+            try:
+                await ws.close(code=1011, reason='Heartbeat timeout')
+            except Exception:
+                pass
+            await self.disconnect_station(code, ws)
+
     async def _check_timeouts(self, threshold_seconds: int):
         while True:
             try:
@@ -316,16 +365,7 @@ class ConnectionManager:
                             continue
                         timed_out.append((code, ws))
 
-                for code, ws in timed_out:
-                    logger.warning(f"Station {code} timed out ({threshold_seconds}s with no heartbeat). Marking offline.")
-                    # Truyền đúng socket đã chụp: disconnect_station dùng nó làm identity
-                    # guard, nên nếu trạm kịp reconnect trong lúc vòng lặp xử lý thì socket
-                    # mới không bị xoá nhầm.
-                    try:
-                        await ws.close(code=1011, reason='Heartbeat timeout')
-                    except Exception:
-                        pass
-                    await self.disconnect_station(code, ws)
+                await self._enforce_timeouts(timed_out, threshold_seconds)
 
             except asyncio.CancelledError:
                 break

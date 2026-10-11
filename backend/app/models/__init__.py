@@ -39,6 +39,11 @@ class OutboxStatus(str, enum.Enum):
     PROCESSING = "PROCESSING"
     SENT = "SENT"
     FAILED = "FAILED"
+    # Đã hết lượt thử. Trước đây trạng thái này dùng chung giá trị FAILED với lỗi
+    # còn được thử lại, nên muốn biết một thông báo đã bỏ hẳn hay chưa phải suy ra
+    # từ next_attempt_at IS NULL — thông tin ngầm, không truy vấn được theo trạng
+    # thái và dễ bị đọc sai. Tách thành giá trị riêng để vòng đời là tường minh.
+    EXHAUSTED = "EXHAUSTED"
 
 class IntegrationSettings(Base):
     """Bảng cấu hình n8n cũ, giữ lại để không phá schema đã migrate.

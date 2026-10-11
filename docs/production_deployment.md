@@ -11,7 +11,9 @@ Nếu bạn từng triển khai REDCODE theo tài liệu trước đây, bốn t
 3. **Báo cáo phát báo động nói rõ số trạm thật sự nhận.** Phản hồi tạo báo động có `target_station_count` (số trạm đích) và `delivered_station_count` (số trạm đã gửi thành công). Người trực phải đọc cả hai. Phát lại một báo động **đã kết thúc** (CANCELLED/EXPIRED) trả **409** thay vì trả lại bản ghi cũ với 201 — trước đây thao tác này khiến người trực tưởng vừa phát được báo động trong khi không còi nào hú.
 4. **Mã đóng WebSocket có nghĩa cụ thể.** `4001` = phiên trạm bị thiết bị khác chiếm chỗ (client chờ 15 giây rồi mới thử lại); `1008` = credential bị từ chối (client **dừng thử lại vĩnh viễn**, phải xác nhận lại thiết bị); `1011` = hết nhịp tim. Đừng xóa `localStorage`/profile browser của máy trạm để "thử lại" — làm vậy mất credential và phải provisioning lại.
 
-Hai điểm hạ tầng đi kèm: `/api/health` trả `websocket: "degraded"` khi vòng giám sát nhịp tim chết (trạm rút điện sẽ hiện ONLINE mãi mãi), và `nginx/default.conf` nay khai báo tường minh kiểu media cho `/assets/audio/` — trước đây tệp `.wav` được trả về dạng `application/octet-stream` và trình duyệt có quyền từ chối phát.
+Hai điểm hạ tầng đi kèm: `/api/health` trả `websocket: "degraded"` **và `status: "degraded"`** khi vòng giám sát nhịp tim chết (trạm rút điện sẽ hiện ONLINE mãi mãi, và báo động hết hạn không còn được chuyển sang EXPIRED), và `nginx/default.conf` nay khai báo tường minh kiểu media cho `/assets/audio/` — trước đây tệp `.wav` được trả về dạng `application/octet-stream` và trình duyệt có quyền từ chối phát.
+
+Hai endpoint chẩn đoán `/api/health/db` và `/api/health/websocket` nay **yêu cầu đăng nhập ADMIN**. `/api/health` công khai vẫn trả các trường tổng hợp nhưng không có mã trạm và không có thông báo lỗi thô. Nếu có probe hạ tầng đang đọc hai endpoint con, phải cấp token ADMIN cho probe đó hoặc bỏ probe đi.
 
 Bảng `integration_settings` vẫn nằm trong schema (migration forward-only, không drop) nhưng **không còn được đọc/ghi**; cấu hình n8n nay chỉ đến từ `.env`.
 
@@ -159,7 +161,11 @@ docker compose logs --tail=100 backend nginx
 Kết quả mong đợi:
 
 - `alembic current` → **`20261007_integrations (head)`** cho release này. Chuỗi đầy đủ khi migrate DB trắng: `8280022f67e9 → 20261006_runtime → 20261006_validity → 20261007_permissions → 20261007_integrations`.
-- `/api/health` → HTTP 200 với `{"status":"ok","database":"ok","websocket":"ok",...}`. `websocket` phải là `ok`; nếu là `degraded` thì vòng giám sát nhịp tim không chạy và **không trạm nào được đánh offline nữa** — dừng triển khai, xem log backend.
+- `/api/health` → HTTP 200 với `{"status":"ok","liveness":"ok","database":"ok","websocket":"ok",...}`. `websocket` phải là `ok`. Ba giá trị có thể gặp và ý nghĩa:
+  - `ok` — vòng giám sát nhịp tim đang chạy.
+  - `degraded` — **đã bật rồi chết**. `status` cũng thành `degraded`: không trạm nào được đánh offline nữa và báo động hết hạn không được kết thúc. Dừng triển khai, xem log backend.
+  - `not_started` — chưa chạy tới bước bật monitor (app đang khởi động, hoặc đã dừng theo lệnh). Không phải sự cố, nhưng nếu đứng yên ở giá trị này sau khi log đã báo `Station offline monitor active` thì là lỗi.
+  `status` là readiness (database **và** vòng giám sát); `liveness` là "tiến trình còn phục vụ được request". Liveness hỏng thì restart; readiness `degraded` thì sửa thành phần đang suy giảm.
 - Log backend phải có `Station offline monitor active` và `Durable notification outbox worker active`.
 
 Image backend cũng tự chạy `alembic upgrade head` trước Uvicorn; chạy migration thủ công ở trên giúp phát hiện lỗi trước khi mở API. Production không dùng `Base.metadata.create_all()` thay Alembic. Nginx build frontend trong image, không phụ thuộc dist có sẵn.
@@ -196,11 +202,11 @@ Khi sửa cấu hình một trạm đang trực: đổi **tên/vị trí/nhóm n
 
 ## 7. Theo dõi sau triển khai
 
-- `/api/health`: đọc **từng trường**, không chỉ HTTP 200. `database`, `websocket` (`degraded` = vòng giám sát nhịp tim chết), `n8n`, `active_stations`/`total_stations`. Chẩn đoán sâu: `/api/health/db` (kèm latency), `/api/health/websocket` (danh sách mã trạm đang kết nối).
+- `/api/health`: đọc **từng trường**, không chỉ HTTP 200. `status` (readiness), `liveness`, `database`, `websocket` (`degraded` = vòng giám sát nhịp tim đã chết; `not_started` = chưa bật), `n8n`, `active_stations`/`total_stations`. Chẩn đoán sâu cần **token ADMIN**: `/api/health/db` (kèm latency), `/api/health/websocket` (danh sách mã trạm đang kết nối, `monitor_running`).
 - Admin monitor: ONLINE/OFFLINE/audio/last seen. `ONLINE` nghĩa là có WebSocket thật; `AUDIO READY` chỉ có giá trị khi trạm đang ONLINE. HEARTBEAT mặc định 5s, offline threshold 15s, monitor tick 5s.
 - Sau mỗi lần phát báo động, đối chiếu `target_station_count` với `delivered_station_count`. Lệch nhau nghĩa là có trạm đích chưa nhận được — xử lý theo mục 11, không coi là "đã phát xong".
 - Audit: CREATED, RECEIVED, DISPLAYED, audio, DISMISSED, ALARM_CANCELLED, EXPIRED, DEVICE_CONNECTED/DISCONNECTED và n8n attempts.
-- Outbox lease stale 5 phút, retry capped exponential; n8n cần dedup stable Idempotency-Key. Job hết max attempts giữ FAILED; chưa có đầy đủ Admin retry UI, chuyển quy trình xử lý backlog cho người vận hành, không reset hàng loạt attempt tùy tiện.
+- Outbox lease stale 5 phút, retry capped exponential; n8n cần dedup stable Idempotency-Key. Vòng đời bản ghi nay tường minh: `PENDING → PROCESSING → SENT` (xong), hoặc `FAILED` + `next_attempt_at` (còn thử lại), hoặc `EXHAUSTED` (đã bỏ hẳn). Đếm và xem danh sách `EXHAUSTED` ở `GET /api/system/status` → `notification_outbox`; phát lại toàn bộ bằng `POST /api/system/outbox/requeue-exhausted` (ADMIN). **Bật lại n8n không tự phát lại** các thông báo đã bỏ hẳn — đó là chủ ý, tránh dội một loạt thông báo cũ vào hệ thống nhận; người vận hành phải quyết định. Gửi lại an toàn về trùng lặp vì mỗi bản ghi giữ nguyên `Idempotency-Key: redcode-outbox-{id}`.
 - Theo dõi disk DB/audio/logs, backup completion/restore drill và clocks. Không xóa audit/history để giảm dung lượng.
 
 ## 8. Backup DB + audio + release
@@ -277,8 +283,11 @@ Migration forward-only; **không** `alembic downgrade` hoặc xóa bảng. Khi c
 | Triệu chứng | Kiểm tra/hành động |
 |---|---|
 | Backend không start | Log migration/config; PostgreSQL alias/network/quyền/secret/demo/origin; không dùng create_all sửa production. Lỗi `Fresh production installation requires INITIAL_ADMIN_PASSWORD` là thiếu biến, không phải lỗi DB |
-| `/api/health` trả `websocket: degraded` | Vòng giám sát nhịp tim đã chết — không trạm nào được đánh offline nữa. Restart backend và kiểm tra log; coi mọi trạng thái ONLINE hiện tại là không đáng tin |
-| Trạm hiện ONLINE nhưng không nhận alarm | Kiểm tra `/api/health/websocket` xem mã trạm có trong `active_station_codes` không. Nếu không có, dashboard đang hiện trạng thái cũ: cho thiết bị kết nối lại |
+| `/api/health` trả `websocket: degraded` | Vòng giám sát nhịp tim đã chết — không trạm nào được đánh offline nữa và báo động hết hạn không được kết thúc. `status` cũng là `degraded`. Restart backend và kiểm tra log; coi mọi trạng thái ONLINE hiện tại là không đáng tin |
+| `/api/health` trả `websocket: not_started` | Chưa chạy tới bước bật monitor. Bình thường trong vài giây đầu khi khởi động; nếu đứng yên thì app không chạy hết lifespan — xem log có dòng `Station offline monitor active` chưa |
+| `/api/health/db` hoặc `/api/health/websocket` trả 401/403 | Đúng thiết kế: hai endpoint chẩn đoán yêu cầu token **ADMIN** (trước đây công khai và lộ chi tiết hạ tầng). Dùng token ADMIN, hoặc đọc các trường tổng hợp ở `/api/health` công khai |
+| Trạm hiện ONLINE nhưng không nhận alarm | Kiểm tra `/api/health/websocket` (token ADMIN) xem mã trạm có trong `active_station_codes` không. Nếu không có, dashboard đang hiện trạng thái cũ: cho thiết bị kết nối lại |
+| n8n có thông báo không gửi được | `GET /api/system/status` → `notification_outbox`: `retryable_failed` là còn thử lại, `exhausted` là đã bỏ hẳn. Xem `exhausted_recent` để biết `alarm_id` và `last_error`. Khi n8n đã sống lại, phát lại bằng `POST /api/system/outbox/requeue-exhausted` |
 | Trạm không kết nối được, UI báo phiên bị chiếm | Đang có thiết bị khác mở cùng mã trạm (đóng `4001`). Tìm máy thứ hai, không xóa profile để "thử lại" |
 | Trạm dừng thử lại vĩnh viễn | Credential bị từ chối (`1008`). Đọc lý do trong log/console; nếu do thu hồi token hoặc đổi mã trạm thì phải XÁC NHẬN THIẾT BỊ lại tại chỗ |
 | Nginx 502 | Backend status/log; migration chưa xong; proxy backend:8000 reachable |
@@ -297,13 +306,20 @@ Ghi: release hash/image, Alembic revision, topology/network/entry origin, invent
 
 ## 13. Bằng chứng đã có và giới hạn
 
-Đợt nghiệm thu gần nhất (2026-10-11) đã chạy thật trên Docker:
+**Chạy lại trong đợt rà soát 5 phát hiện (2026-10-11, sau commit của đợt này):**
 
 | Hạng mục | Kết quả |
 |---|---|
-| Bộ test backend | **69 passed** (trên DB SQLite tạm mới; `tests/test_p0_regressions.py` 14 test tái hiện lỗi đã sửa) |
+| Bộ test backend | **76 passed** trên DB SQLite tạm mới (`DATABASE_URL` trỏ file tạm, không dùng `backend/redcode.db`) |
 | Bộ test frontend (`npm test`) | **19 passed, 0 fail** |
-| `npm run build` | PASS (281.81 kB js / 29.40 kB css) |
+| `npm run build` | PASS (282.25 kB js / 29.40 kB css) |
+| Test live qua uvicorn thật (`tests/test_live_transport.py`) | **1 passed** — server thật chạy hết lifespan, `/api/health` trả 200 |
+| 5 test mới bắt được lỗi cũ | **5/5** — mỗi test chạy lại trên code đã hoàn nguyên đúng dòng lỗi cũ và **fail**; sau đó trả file về nguyên trạng |
+
+**Từ đợt nghiệm thu Docker trước đó cùng ngày (không chạy lại trong đợt này):**
+
+| Hạng mục | Kết quả |
+|---|---|
 | `docker compose build` / `up` | PASS; cả hai container `Up` |
 | Chuỗi Alembic trên DB trắng | PASS toàn bộ `8280022f67e9 → 20261007_integrations`, seed thành công |
 | `/api/health` qua Nginx | `{"status":"ok","database":"ok","websocket":"ok","n8n":"disabled",...}` |
@@ -318,3 +334,4 @@ Ghi: release hash/image, Alembic revision, topology/network/entry origin, invent
 - **PostgreSQL thật**: chuỗi Alembic đã chạy thật nhưng trên SQLite; chưa chạy trên một instance PostgreSQL của REDCODE.
 - **Sao lưu/phục hồi**: chưa diễn tập `pg_dump`/`pg_restore` khứ hồi (mục 8–9) vì chưa có DB PostgreSQL của REDCODE.
 - **n8n chết không ảnh hưởng báo động**: mới kiểm ở mức API/outbox, chưa ở mức thiết bị thật.
+- **Phát lại thông báo n8n đã bỏ hẳn**: `POST /api/system/outbox/requeue-exhausted` mới được kiểm bằng test tự động (đưa bản ghi về `PENDING`, `attempt_count` về 0); **chưa** chạy với một n8n thật đang sống lại để xác nhận n8n khử trùng đúng theo `Idempotency-Key`.

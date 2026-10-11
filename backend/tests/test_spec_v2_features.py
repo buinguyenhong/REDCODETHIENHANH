@@ -155,18 +155,32 @@ async def test_active_alarms_sync_and_display_completed():
 async def test_health_sub_endpoints():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Không có token: hai endpoint chẩn đoán này phải từ chối. Trước đây chúng
+        # công khai và /health/db trả nguyên văn exception của driver (có host,
+        # cổng, tên user), còn /health/websocket trả danh sách mã trạm đang trực.
+        anon_db = await ac.get("/api/health/db")
+        assert anon_db.status_code == 401
+        anon_ws = await ac.get("/api/health/websocket")
+        assert anon_ws.status_code == 401
+
+        admin_res = await ac.post("/api/auth/login", json={"username": "admin", "password": "admin123456"})
+        assert admin_res.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {admin_res.json()['access_token']}"}
+
         # GET /api/health/db
-        db_res = await ac.get("/api/health/db")
+        db_res = await ac.get("/api/health/db", headers=admin_headers)
         assert db_res.status_code == 200
         db_data = db_res.json()
         assert db_data["status"] == "ok"
         assert "latency_ms" in db_data
         assert isinstance(db_data["latency_ms"], (int, float))
+        # Không rò chi tiết nội bộ ra ngoài.
+        assert "detail" not in db_data
 
         # GET /api/health/websocket
-        ws_res = await ac.get("/api/health/websocket")
+        ws_res = await ac.get("/api/health/websocket", headers=admin_headers)
         assert ws_res.status_code == 200
         ws_data = ws_res.json()
-        assert ws_data["status"] == "ok"
+        assert ws_data["status"] in ("ok", "degraded")
         assert "active_connections" in ws_data
         assert "active_stations_count" in ws_data

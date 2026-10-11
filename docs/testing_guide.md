@@ -12,7 +12,7 @@ Ngày cập nhật: 2026-10-11. Release tham chiếu `84ad2d6`, schema head `202
 | Staging thực | PostgreSQL + Nginx + browsers + n8n test + network faults | Nghiệm thu inventory thiết bị chưa được thử |
 | Site acceptance | PC/Android/loa, boot/refresh/sleep và routing LAN thực | Case còn BLOCKED/PENDING |
 
-Kết quả gần nhất (2026-10-11): **69 backend PASS, 19 JS PASS**, `npm run build` PASS; khói end-to-end qua Nginx trong container 23/23 đạt và khói khởi động lại 8/8 đạt. Đây là evidence baseline chạy trên SQLite trong container, **không phải** kết quả của lần chạy tại bệnh viện và không phải nghiệm thu thiết bị thật. Chi tiết đầy đủ và danh sách giới hạn: [runbook mục 13](production_deployment.md#13-bằng-chứng-đã-có-và-giới-hạn).
+Kết quả gần nhất (2026-10-11, sau đợt sửa 5 phát hiện rà soát): **76 backend PASS, 19 JS PASS**, `npm run build` PASS. Đợt này bổ sung `tests/test_review_findings_regressions.py` (7 test khoá 5 lỗi đã sửa) và một bước kiểm chứng riêng: mỗi test mới được chạy lại trên code đã **hoàn nguyên đúng dòng lỗi cũ** và đều **fail** — tức chúng thật sự bắt được lỗi, không phải test trang trí. Khói end-to-end qua Nginx trong container (23/23) và khói khởi động lại (8/8) là của lần chạy Docker trước đó cùng ngày, **không chạy lại** trong đợt này. Toàn bộ đây là evidence trên SQLite, **không phải** kết quả của lần chạy tại bệnh viện và không phải nghiệm thu thiết bị thật. Chi tiết đầy đủ và danh sách giới hạn: [runbook mục 13](production_deployment.md#13-bằng-chứng-đã-có-và-giới-hạn).
 
 ## 2. Chuẩn bị test fixture thực tế
 
@@ -155,12 +155,13 @@ Thử mute/loa rút dây riêng: browser có thể báo play success dù không 
 ### T08 — Scenario F: n8n down/retry/crash
 
 1. Endpoint n8n test ngừng hoặc trả 500/timeout; trigger/display/audio core vẫn hoạt động.
-2. Outbox lưu attempt/error/next_attempt_at; retry 2s/4s… theo attempt (worker poll khoảng 2s), hết max retries giữ FAILED.
-3. Fault-injection trên test worker tại claim sau persist PROCESSING/locked_at nhưng trước I/O: kill process, restart. Sau lease timeout 5 phút, item quay queue hoặc FAILED nếu exhausted; không PROCESSING mãi.
+2. Outbox lưu attempt/error/next_attempt_at; retry 2s/4s… theo attempt (worker poll khoảng 2s), hết max retries chuyển **EXHAUSTED** (khác `FAILED` — `FAILED` là còn thử lại và luôn có `next_attempt_at`).
+3. Fault-injection trên test worker tại claim sau persist PROCESSING/locked_at nhưng trước I/O: kill process, restart. Sau lease timeout 5 phút, item quay queue về FAILED nếu còn lượt, hoặc EXHAUSTED nếu đã chạm trần; không PROCESSING mãi.
 4. n8n nhận thành công: SENT, sent_at có, locked_at/next_attempt_at cleared.
 5. Simulate server chết sau n8n nhận nhưng trước SENT commit: retry có cùng Idempotency-Key; workflow n8n dedup side effect.
+6. Theo dõi tồn đọng: `GET /api/system/status` (ADMIN) → `notification_outbox` có `retryable_failed`, `exhausted` và `exhausted_recent` (kèm `alarm_id`, `last_error`). **Bật lại n8n không tự phát lại** thông báo đã bỏ hẳn — phải gọi `POST /api/system/outbox/requeue-exhausted` (ADMIN) sau khi n8n đã sống lại. Kiểm tra lại bằng một n8n test thật đang chạy: n8n phải khử trùng theo `Idempotency-Key` nếu thông báo trước đó đã tới.
 
-Repo tự động test claim/crash/recovery; để tái hiện live cần test harness/pause tại điểm claim, không kill ngẫu nhiên rồi coi đã chứng minh đúng điểm lỗi. Semantics at-least-once, không tuyên bố exactly-once. Case crash ở attempt cuối có thể exhausted FAILED, cần quy trình xử lý backlog.
+Repo tự động test claim/crash/recovery; để tái hiện live cần test harness/pause tại điểm claim, không kill ngẫu nhiên rồi coi đã chứng minh đúng điểm lỗi. Semantics at-least-once, không tuyên bố exactly-once. Case crash ở attempt cuối có thể exhausted, cần quy trình xử lý backlog (bước 6).
 
 ### T09 — Scenario G: restart và dữ liệu bền vững
 
@@ -184,6 +185,8 @@ Trên DB test, tạo records có server timestamps quy đổi từ giờ bệnh 
 ### T12 — Migration/startup/security logs
 
 Fresh test PostgreSQL `alembic upgrade head` → login/provision/trigger/dismiss/report. Upgrade bản sao DB release cũ giữ counts/history/permissions; normalized explicit deny không bị legacy JSON override; invalid JSON IDs không mở quyền. Kiểm tra Alembic current/schema/unique idempotency/PostgreSQL sequence, concurrent retry một alarm. Production startup không tự create_all. Scan Nginx/Uvicorn/upstream proxy logs: không JWT/device credentials/password thật. Không chạy downgrade giả; rollback thử bằng backup.
+
+Kiểm tra bề mặt health: `/api/health` công khai trả `status`/`liveness`/`database`/`websocket`/`n8n`/`active_stations`/`total_stations` và **không** có mã trạm hay thông báo lỗi thô; `/api/health/db` và `/api/health/websocket` trả **401** khi không có token, **403** với tài khoản OPERATOR, **200** với ADMIN. Dừng vòng giám sát nhịp tim (kill task trong test, không phải trên production đang chạy): `/api/health` phải trả `websocket: degraded` **và** `status: degraded` trong khi `liveness` vẫn `ok`.
 
 ### T13 — PC/Android unattended
 

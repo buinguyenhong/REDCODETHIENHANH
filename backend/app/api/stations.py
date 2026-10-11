@@ -212,7 +212,16 @@ async def station_heartbeat(
     else:
         station.audio_ready = False
         station.client_ready = False
-    station.status = StationStatus.ONLINE.value
+    # ONLINE nghĩa là CÓ KÊNH NHẬN BÁO ĐỘNG, không phải "thiết bị vừa gọi được API".
+    # Nhịp tim HTTP chứng minh thiết bị còn truy cập được mạng, nhưng báo động chỉ
+    # đi qua WebSocket (``broadcast_alarm`` chỉ gửi cho ``manager.active_stations``).
+    # Trước đây dòng này luôn ghi ONLINE, nên một trạm gửi nhịp tim qua WiFi trong
+    # khi cáp LAN đứt vẫn hiện ONLINE xanh trên bảng giám sát — và người trực tin
+    # khoa đó đã nhận được báo động. ``last_seen_at`` ở trên đã ghi nhận thiết bị
+    # còn sống; trạng thái phải phản ánh khả năng nhận báo động.
+    station.status = (
+        StationStatus.ONLINE.value if ws_connected else StationStatus.OFFLINE.value
+    )
     station.ip_address = client_ip
     station.updated_at = now
 
@@ -229,6 +238,10 @@ async def station_heartbeat(
 
     return {
         "status": "ok",
+        # Phân biệt hai điều khác nhau mà trước đây bị gộp làm một: thiết bị còn
+        # gọi được API (device_reachable) và thiết bị có kênh nhận báo động
+        # (can_receive_alarms). Thiếu vế thứ hai thì báo động không tới được.
+        "device_reachable": True,
         "websocket_connected": ws_connected,
         "can_receive_alarms": ws_connected,
         "timestamp": now.isoformat(),

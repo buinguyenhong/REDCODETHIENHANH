@@ -1,3 +1,26 @@
+"""Hàng đợi gửi thông báo sang n8n (đường phụ, không chặn báo động).
+
+Vòng đời một bản ghi, tường minh theo trạng thái:
+
+    PENDING ──claim──▶ PROCESSING ──thành công──▶ SENT        (kết thúc)
+                           │
+                           ├── lỗi, còn lượt ──▶ FAILED  + next_attempt_at  (sẽ thử lại)
+                           └── lỗi, hết lượt ──▶ EXHAUSTED                  (kết thúc)
+
+FAILED và EXHAUSTED là hai chuyện khác nhau và phải tra được bằng trạng thái,
+không phải suy ra từ ``next_attempt_at IS NULL``: bản ghi còn được thử lại thì
+backoff cũng có lúc để ``next_attempt_at`` khác NULL, còn bản ghi đã bỏ hẳn thì
+không. Trước đây cả hai dùng chung giá trị FAILED nên câu hỏi "còn bao nhiêu
+thông báo đã bỏ hẳn" không có truy vấn nào trả lời được.
+
+Quy tắc khi bật lại n8n: worker chỉ nhặt PENDING và FAILED còn lượt, nên thông
+báo đã EXHAUSTED nằm im — bật lại n8n **không** tự phát lại chúng. Đó là chủ ý:
+một hàng đợi tồn đọng lâu ngày mà tự xả ra sẽ dội một loạt thông báo cũ vào hệ
+thống nhận. Người vận hành xem số lượng ở ``GET /api/system/status``
+(``notification_outbox.exhausted``) và quyết định phát lại qua
+``POST /api/system/outbox/requeue-exhausted``. Gửi lại là an toàn về trùng lặp:
+mỗi bản ghi giữ nguyên Idempotency-Key ``redcode-outbox-{id}`` nên n8n tự khử.
+"""
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
@@ -44,7 +67,24 @@ class OutboxWorker:
         now = datetime.now(timezone.utc)
         now_naive = now.replace(tzinfo=None)
         async with AsyncSessionLocal() as session:
-            await session.execute(update(NotificationOutbox).where(NotificationOutbox.status == OutboxStatus.PROCESSING.value, or_(NotificationOutbox.locked_at == None, NotificationOutbox.locked_at < now - timedelta(minutes=5))).values(status=OutboxStatus.FAILED.value, locked_at=None))
+            # Thu hồi job mồ côi: worker chết giữa chừng để lại PROCESSING với lease
+            # đã hết hạn. Trả nó về FAILED để được thử lại — lượt đã bị tiêu lúc
+            # claim, nên lần thử kế tiếp là lượt kế tiếp.
+            await session.execute(update(NotificationOutbox).where(
+                NotificationOutbox.status == OutboxStatus.PROCESSING.value,
+                or_(NotificationOutbox.locked_at == None, NotificationOutbox.locked_at < now - timedelta(minutes=5))
+            ).values(status=OutboxStatus.FAILED.value, locked_at=None))
+            # Rồi chốt vòng đời cho những bản ghi đã chạm trần lượt thử. Bước này bắt
+            # cả bản ghi vừa được thu hồi ở trên (tiến trình chết đúng lượt cuối) lẫn
+            # bản ghi cũ còn nằm ở FAILED với next_attempt_at NULL từ trước — đúng
+            # trạng thái mơ hồ mà EXHAUSTED sinh ra để xoá bỏ: bộ chọn bên dưới không
+            # bao giờ nhặt lại (đã chạm trần), nhưng nếu để nguyên FAILED thì không
+            # phép đếm theo trạng thái nào trả lời được "còn bao nhiêu thông báo đã
+            # bỏ hẳn". Đây là chuyển trạng thái dữ liệu, không đổi schema.
+            await session.execute(update(NotificationOutbox).where(
+                NotificationOutbox.status == OutboxStatus.FAILED.value,
+                NotificationOutbox.attempt_count >= settings.N8N_MAX_RETRIES
+            ).values(status=OutboxStatus.EXHAUSTED.value, next_attempt_at=None))
             await session.commit()
             stmt = (
                 select(NotificationOutbox)
@@ -133,7 +173,13 @@ class OutboxWorker:
                 session.add(SystemEvent(event_type='N8N_REQUEST_FAILED', severity='WARNING', message='n8n delivery attempt failed', event_metadata={'outbox_id': item.id, 'attempt': item.attempt_count}, created_at=now))
                 item.last_error = last_err
                 if item.attempt_count >= settings.N8N_MAX_RETRIES:
-                    item.status = OutboxStatus.FAILED.value
+                    # EXHAUSTED, không phải FAILED: hai vòng đời khác nhau. FAILED
+                    # là "lần này lỗi, còn thử lại" (có next_attempt_at); EXHAUSTED
+                    # là "đã bỏ hẳn". Trước đây cả hai dùng chung giá trị FAILED và
+                    # chỉ phân biệt được bằng next_attempt_at IS NULL — thông tin
+                    # ngầm, không đếm được bằng truy vấn theo trạng thái, nên không
+                    # có cách nào trả lời "còn bao nhiêu thông báo đã bỏ hẳn".
+                    item.status = OutboxStatus.EXHAUSTED.value
                     item.next_attempt_at = None
                     session.add(SystemEvent(
                         station_id=None,
