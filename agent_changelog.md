@@ -6,6 +6,34 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-11 — Merge nhánh sửa lỗi vào `main`, `main` xanh trở lại
+
+Yêu cầu: "merge vào main". `main` trước đó **đang đỏ**: hai lần chạy Actions gần nhất trên `main` (`9b01d4a`, `d214577`) đều `failure`. Đợt này đưa toàn bộ đợt sửa lỗi LAN + hạ tầng test vào `main` và xác nhận `main` xanh trở lại.
+
+### Thay đổi
+
+- Không sửa file. Merge thuần túy.
+- `git checkout main` → `git merge --ff-only fix/lan-field-bugs-and-test-harness`: **fast-forward**, nhánh đi trước 4 commit và không tụt lại (`0 4`), nên không xung đột và không sinh merge commit.
+- `git push origin main`: `d214577..deaac54`. `main` và nhánh nay cùng trỏ `deaac54`.
+- 13 file vào `main`, trong đó 5 file mới: `backend/pytest.ini`, `backend/tests/live_server.py`, `backend/tests/ws_reject_probe.py`, `docs/production-readiness.html`, `frontend/src/utils/uuid.js`.
+
+### Commands/bằng chứng thực chạy
+
+- `git merge --ff-only` → fast-forward, 13 files changed, 1409 insertions(+), 43 deletions(-).
+- `git status --short` sau merge → sạch.
+- Truy vấn GitHub API: run **`38104084659`**, branch `main`, head_sha `deaac544`, `status: completed`, `conclusion: **success**`.
+- Trích conclusion từng step — **cả ba job success**, không step nào bị skip:
+  - `backend`: `Initialize containers`, `Create live transport database`, `alembic upgrade head`, `pytest tests -v`, `Stop containers` — success
+  - `frontend`: `npm ci`, `npm test`, `npm run build` — success
+  - `docker`: build `backend/Dockerfile` và `nginx/Dockerfile` — success
+
+### Giới hạn
+
+- Vẫn **chưa tải được log chi tiết job** (`gh` chưa đăng nhập) — kết luận từ trạng thái từng step qua API công khai.
+- Nhánh `fix/lan-field-bugs-and-test-harness` **vẫn còn** trên local và remote (chưa xoá) — có thể xoá nếu không cần giữ.
+- Chưa có PR: merge trực tiếp bằng fast-forward theo yêu cầu, không qua review.
+- Không thay đổi schema, không migration mới.
+
 ## 2026-10-09 — Push nhánh và xác nhận CI xanh trên GitHub Actions
 
 Yêu cầu: "push code cho tôi". Đợt này **không sửa code sản phẩm lẫn hạ tầng test** — chỉ push nhánh đã commit và ghi nhận bằng chứng Actions, mục đích là gỡ chặn cứng "CI chưa có bằng chứng chạy thật" của Cổng 1 (mọi bằng chứng trước đó đều là chạy tay mô phỏng đúng lệnh CI).
@@ -28,6 +56,7 @@ Yêu cầu: "push code cho tôi". Đợt này **không sửa code sản phẩm l
 
 - **Chưa tải được log chi tiết của job**: endpoint `/actions/jobs/<id>/logs` đòi xác thực, mà `gh` chưa đăng nhập, nên **số test in trong log Actions chưa đối chiếu được**. Kết luận ở trên lấy từ trạng thái từng step qua API công khai, không phải từ nội dung log.
 - **Chưa merge vào `main`** — nhánh vẫn đứng riêng, chờ quyết định.
+  - *Cập nhật 2026-10-11:* đã merge fast-forward vào `main`; xem entry "Merge nhánh sửa lỗi vào `main`, `main` xanh trở lại" ở đầu file.
 - Không thay đổi schema, không migration mới, không ảnh hưởng code sản phẩm.
 
 ## 2026-10-09 — Tổng hợp phiên: từ lỗi thực địa LAN tới hạ tầng kiểm thử
