@@ -93,6 +93,15 @@ FAILED test_health_never_calls_n8n_and_reports_configuration_only           asse
 
 Sau khi trả file về nguyên trạng, chạy lại toàn bộ suite: **81 passed** (dòng lệnh đầu ở trên) — xác nhận không sót bản hoàn nguyên nào.
 
+### Bằng chứng CI
+
+- Commit `980c25e`, push `main` (`6a163bb..980c25e`). Truy vấn GitHub API: run **`38125659697`** (run_number 16), head_sha `980c25eb3428b529364098b2f0828815ed289eeb`, event `push`, branch `main`, tạo `2026-10-11T08:40:53Z`, cập nhật `2026-10-11T08:42:09Z`, `status: completed`, `conclusion: success`. Đối chiếu **từng bước** — cả ba job success, **không bước nào bị skip**:
+  - `frontend` (9 bước): `npm ci` / `npm test` / `npm run build` đều success.
+  - `backend` (12 bước): `Initialize containers` (service PostgreSQL 16), `Create live transport database`, `alembic upgrade head`, `pytest tests -v` đều success — nghĩa là **5 test mới của đợt này cũng đã chạy trên PostgreSQL thật** trong CI, không chỉ trên SQLite ở local.
+  - `docker` (6 bước): build `backend/Dockerfile` và `nginx/Dockerfile` đều success.
+  - Run URL: <https://github.com/buinguyenhong/REDCODETHIENHANH/actions/runs/38125659697>
+- **Không đọc được số test cụ thể trong log job backend**: endpoint log của GitHub API trả **403** vì phiên này chưa xác thực GitHub (`gh` chưa đăng nhập) — đã thử lại ở đợt này và vẫn 403. Bước `pytest tests -v` success là bằng chứng đã có; con số test trong CI để trống thay vì suy đoán. Con số **81 passed** là của lần chạy local trên SQLite ở mục trên, không phải số của CI.
+
 ### Giới hạn
 
 - **Chưa chạy lại Docker/e2e trong đợt này.** Đợt này chỉ chạy pytest/npm; CI có **build lại cả hai Docker image** (job `docker`) nhưng **không dựng stack và không chạy e2e**. Các bằng chứng Docker/e2e trước đó vẫn là của lần chạy cùng ngày, đã ghi rõ nguồn.
