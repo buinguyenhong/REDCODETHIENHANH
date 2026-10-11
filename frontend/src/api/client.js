@@ -35,7 +35,12 @@ export async function apiRequest(endpoint, options = {}) {
     } catch (_) {
       errorDetail = response.statusText || errorDetail;
     }
-    throw new Error(errorDetail);
+    // Gắn mã trạng thái vào lỗi để lớp gọi phân biệt được các ca cần xử lý khác
+    // nhau (ví dụ 409 idempotency phải xóa khóa trước khi bấm lại) thay vì phải
+    // so khớp chuỗi thông báo.
+    const error = new Error(errorDetail);
+    error.status = response.status;
+    throw error;
   }
 
   if (response.status === 204) return null;

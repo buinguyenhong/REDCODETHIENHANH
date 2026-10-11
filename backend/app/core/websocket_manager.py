@@ -38,14 +38,29 @@ class ConnectionManager:
     async def connect_station(self, station_code: str, websocket: WebSocket):
         await websocket.accept()
         async with self._lock:
-            # If previous connection exists for this station, close it gracefully
-            if station_code in self.active_stations:
-                try:
-                    await self.active_stations[station_code].close(code=1000)
-                except Exception:
-                    pass
+            previous = self.active_stations.get(station_code)
             self.active_stations[station_code] = websocket
             self.last_heartbeats[station_code] = datetime.now(timezone.utc)
+
+        # Đóng socket cũ NGOÀI lock. close() là I/O có thể treo với kết nối
+        # half-open; giữ lock trong lúc đó sẽ chặn mọi broadcast_alarm và cả vòng
+        # monitor nhịp tim — một thiết bị hỏng đủ để làm tê liệt phát báo động
+        # toàn viện. Socket cũ đóng muộn cũng vô hại: handler của nó gọi
+        # disconnect_station(code, socket_cũ) và bị guard danh tính chặn lại.
+        #
+        # Mã đóng phải là 4001 "Station session superseded", không phải 1000. Đóng
+        # sớm ở đây thay cho việc để handler cũ tự phát hiện, nên mã 1000 sẽ khiến
+        # client coi đây là đóng bình thường và thử lại sau ~1 giây — hai thiết bị
+        # mở cùng mã trạm sẽ đá nhau liên tục, mỗi vòng kèm một lượt ghi DB và
+        # broadcast STATION_STATUS. 4001 cho client biết phải chờ lâu (15 giây) và
+        # hiện cảnh báo cho người trực.
+        if previous is not None and previous is not websocket:
+            try:
+                await asyncio.wait_for(
+                    previous.close(code=4001, reason='Station session superseded'), timeout=2
+                )
+            except Exception:
+                logger.debug("Không đóng được socket cũ của trạm %s", station_code, exc_info=True)
 
         # Mark station online in DB & log system event
         await self._update_station_db_status(station_code, True)
@@ -70,6 +85,18 @@ class ConnectionManager:
             if websocket is not None and current_ws is not websocket:
                 logger.info(f"Ignored disconnect from obsolete socket for station: {station_code}")
                 return
+            if websocket is None:
+                # Không có danh tính socket thì không thể chứng minh đây là phiên của
+                # mình, nên KHÔNG được đuổi phiên đang giữ trạm. Trước đây nhánh này
+                # xoá thẳng socket đang sống — một vòng monitor nhịp tim cũ đủ để đá
+                # trạm vừa kết nối lại ra khỏi hệ thống. Không có danh tính cũng
+                # nghĩa là không có chuyển trạng thái nào để ghi: chỉ dọn dấu vết.
+                if current_ws is not None:
+                    logger.warning(
+                        "Refused unidentified disconnect for station %s: a live socket is registered", station_code
+                    )
+                self.last_heartbeats.pop(station_code, None)
+                return
 
             if station_code in self.active_stations:
                 del self.active_stations[station_code]
@@ -92,10 +119,36 @@ class ConnectionManager:
                 self.active_dashboards.remove(websocket)
         logger.info("Dashboard client disconnected")
 
+    async def touch_station(self, station_code: str) -> bool:
+        """Làm mới đồng hồ sống cho trạm đang có socket, không ghi DB.
+
+        Dùng cho các thông điệp chứng minh kênh realtime còn sống nhưng không
+        mang theo trạng thái sẵn sàng (ví dụ PING). Nếu PING không làm mới đồng
+        hồ, một client chỉ dùng PING sẽ bị monitor cắt ở ngưỡng 15 giây dù hoàn
+        toàn khoẻ.
+        """
+        async with self._lock:
+            if station_code not in self.active_stations:
+                return False
+            self.last_heartbeats[station_code] = datetime.now(timezone.utc)
+            return True
+
     async def update_heartbeat(self, station_code: str, audio_ready: bool = False, client_ready: bool = True):
         now = datetime.now(timezone.utc)
         async with self._lock:
-            self.last_heartbeats[station_code] = now
+            # Chỉ theo dõi nhịp tim của trạm ĐANG có socket. Ghi vào last_heartbeats cho
+            # một trạm không có kết nối (ví dụ heartbeat HTTP) sẽ tạo entry mồ côi khiến
+            # monitor tưởng trạm vừa mất kết nối và đánh OFFLINE giả mỗi vòng.
+            connected = station_code in self.active_stations
+            if connected:
+                self.last_heartbeats[station_code] = now
+
+        if not connected:
+            # Nhịp tim không kèm WebSocket (endpoint HTTP dự phòng): trạm còn sống
+            # nhưng KHÔNG có kênh nhận báo động. Ghi websocket_connected=True ở đây
+            # sẽ phủ nhận chính kết quả kiểm tra của endpoint và dựng lại đúng lời
+            # nói dối "ONLINE" mà endpoint vừa sửa. last_seen_at đã do endpoint ghi.
+            return
 
         async with AsyncSessionLocal() as session:
             try:
@@ -120,6 +173,10 @@ class ConnectionManager:
         """
         Broadcasts alarm to target stations (if None, broadcast to all stations),
         and always sends to all dashboard monitors.
+
+        Trả về số trạm gửi THÀNH CÔNG và số trạm đích, để tầng API nói được sự
+        thật với người trực: một báo động "đã phát" tới 12 trạm nhưng chỉ 9 trạm
+        đang có kết nối là thông tin khác hẳn với "đã phát tới mọi trạm".
         """
         message = {
             "type": "ALARM_EVENT",
@@ -137,9 +194,13 @@ class ConnectionManager:
                 target_set = set(target_station_codes)
                 recipients = [(code, ws) for code, ws in self.active_stations.items() if code in target_set]
 
+        delivered = 0
+
         async def deliver(code, ws):
+            nonlocal delivered
             try:
                 await asyncio.wait_for(ws.send_text(json.dumps(message)), timeout=1)
+                delivered += 1
             except Exception as e:
                 logger.warning(f"Failed to send alarm to station {code}: {e}")
                 dead_stations.append((code, ws))
@@ -148,9 +209,24 @@ class ConnectionManager:
         # 2. Send to all dashboard clients
         await self.broadcast_to_dashboards(message)
 
-        # Cleanup any dead sockets
+        # Cleanup any dead sockets. Phải truyền kèm socket đã hỏng: disconnect_station
+        # dùng nó làm danh tính phiên, còn lời gọi không danh tính sẽ bị guard từ chối
+        # (đúng như thiết kế) và socket chết nằm lại trong active_stations vĩnh viễn —
+        # mọi báo động sau đó lại thử gửi vào xác đó, tốn 1 giây timeout mỗi lần.
         for code, ws in dead_stations:
             await self.disconnect_station(code, ws)
+
+        return {"delivered": delivered, "targets": len(target_station_codes) if target_station_codes is not None else len(recipients)}
+
+    @property
+    def monitor_running(self) -> bool:
+        """Vòng giám sát nhịp tim còn sống hay không.
+
+        Nếu task này chết, không trạm nào bị đánh dấu offline nữa và dashboard sẽ
+        hiện ONLINE vĩnh viễn cho thiết bị đã rút điện — đúng loại hỏng im lặng mà
+        /api/health phải nói ra thay vì luôn trả websocket="ok".
+        """
+        return self._monitor_task is not None and not self._monitor_task.done()
 
     async def broadcast_to_dashboards(self, message: dict):
         dead_dashboards = []
@@ -185,16 +261,19 @@ class ConnectionManager:
         async with AsyncSessionLocal() as session:
             try:
                 # Update station
-                stmt = (
-                    update(Station)
-                    .where(Station.station_code == station_code)
-                    .values(
-                        websocket_connected=connected,
-                        status=status,
-                        last_seen_at=now,
-                        updated_at=now
-                    )
-                )
+                values = {
+                    "websocket_connected": connected,
+                    "status": status,
+                    "last_seen_at": now,
+                    "updated_at": now,
+                }
+                if not connected:
+                    # Trạm đã mất kết nối thì không còn chứng cứ nào cho việc phát được
+                    # âm thanh. Giữ cờ cũ sẽ khiến dashboard hiện "AUDIO READY" cho một
+                    # trạm đã offline nhiều ngày — đúng loại tuyên bố sai cần tránh.
+                    values["audio_ready"] = False
+                    values["client_ready"] = False
+                stmt = update(Station).where(Station.station_code == station_code).values(**values)
                 res = await session.execute(stmt)
 
                 # Log system event
@@ -223,18 +302,29 @@ class ConnectionManager:
                 timed_out = []
 
                 async with self._lock:
-                    for code, last_seen in list(self.last_heartbeats.items()):
-                        elapsed = (now - last_seen).total_seconds()
-                        if elapsed > threshold_seconds:
-                            timed_out.append((code, self.active_stations.get(code)))
+                    for code in list(self.last_heartbeats.keys()):
+                        last_seen = self.last_heartbeats[code]
+                        if (now - last_seen).total_seconds() <= threshold_seconds:
+                            continue
+                        ws = self.active_stations.get(code)
+                        if ws is None:
+                            # Entry heartbeat mồ côi: không còn socket nào cho trạm này
+                            # (ví dụ trạm chỉ gửi heartbeat HTTP). Chỉ dọn dấu vết, không
+                            # đánh dấu offline — chưa từng có kết nối thật để mất, và ghi
+                            # DEVICE_DISCONNECTED ở đây sẽ làm nhấp nháy dashboard mỗi vòng.
+                            del self.last_heartbeats[code]
+                            continue
+                        timed_out.append((code, ws))
 
                 for code, ws in timed_out:
                     logger.warning(f"Station {code} timed out ({threshold_seconds}s with no heartbeat). Marking offline.")
-                    if ws is not None:
-                        try:
-                            await ws.close(code=1011, reason='Heartbeat timeout')
-                        except Exception:
-                            pass
+                    # Truyền đúng socket đã chụp: disconnect_station dùng nó làm identity
+                    # guard, nên nếu trạm kịp reconnect trong lúc vòng lặp xử lý thì socket
+                    # mới không bị xoá nhầm.
+                    try:
+                        await ws.close(code=1011, reason='Heartbeat timeout')
+                    except Exception:
+                        pass
                     await self.disconnect_station(code, ws)
 
             except asyncio.CancelledError:

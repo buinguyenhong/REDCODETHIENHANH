@@ -71,3 +71,50 @@ test('late ended or repeated errors after failure cannot complete audio', async 
   assert.equal(completed, 0);
   assert.equal(failed, 1);
 });
+
+// --- Hồi quy: cờ "sẵn sàng âm thanh" ---
+// Báo động thật phát qua new Audio(url) (HTMLAudioElement), còn phép thử cũ chỉ
+// chạy OscillatorNode của WebAudio. Hai đường ống có chính sách autoplay riêng,
+// nên một tiếng bíp WebAudio thành công không chứng minh được báo động sẽ hú.
+
+test('verifyPlayback proves readiness through the same <audio> pipeline real alarms use', async () => {
+  soundPlayer.isAudioReady = false;
+  assert.equal(await soundPlayer.verifyPlayback(), true);
+  assert.equal(soundPlayer.isAudioReady, true);
+  assert.equal(audios.length, 1);
+  assert.match(audios[0].url, /^data:audio\/wav;base64,/);
+  assert.equal(audios[0].paused, true, 'phải dừng ngay sau khi thử để không phát thừa');
+});
+
+test('verifyPlayback refuses to claim readiness when the browser blocks playback', async () => {
+  soundPlayer.isAudioReady = false;
+  globalThis.Audio.prototype.play = () => Promise.reject(new Error('NotAllowedError'));
+  await assert.rejects(soundPlayer.verifyPlayback(), /NotAllowedError/);
+  assert.equal(soundPlayer.isAudioReady, false);
+});
+
+test('a WebAudio test tone cannot by itself mark the station audio-ready', async () => {
+  soundPlayer.isAudioReady = false;
+  soundPlayer.audioContext = {
+    state: 'running',
+    currentTime: 0,
+    destination: {},
+    resume: () => Promise.resolve(),
+    createOscillator: () => ({
+      frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect() {}, start() {}, stop() {},
+      set onended(fn) { setTimeout(fn, 0); },
+    }),
+    createGain: () => ({ gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }),
+  };
+  await soundPlayer.playTestTone();
+  assert.equal(soundPlayer.isAudioReady, false, 'tiếng bíp WebAudio không phải bằng chứng phát được báo động');
+  soundPlayer.audioContext = null;
+});
+
+test('audio verification cannot interrupt an active alarm', async () => {
+  soundPlayer.playAlarmSequence(['/assets/audio/a.wav'], 1, 0);
+  await assert.rejects(soundPlayer.verifyPlayback(), /Đang phát cảnh báo/);
+  assert.equal(soundPlayer.isPlaying, true);
+  soundPlayer.stop();
+});

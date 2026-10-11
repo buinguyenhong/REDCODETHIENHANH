@@ -6,6 +6,59 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-11 — Sửa loạt lỗi P0 về kết nối, phục hồi và tính trung thực của trạng thái; nghiệm thu trên Docker
+
+Yêu cầu: "đã chạy docker engine. hãy thực thi" — Docker engine đã hoạt động nên thực thi loạt sửa P0 đã rà soát và dùng Docker cho phần kiểm chứng trước đây bị chặn. Theo định hướng: "Tiếp tục bổ sung và chạy các bài kiểm thử liên quan đến những phần code đang chỉnh sửa. Không tuyên bố đã kiểm chứng thiết bị thực tế nếu mới chỉ chạy automated tests."
+
+Không có migration mới, không đổi schema. Không tạo container PostgreSQL nào (không tồn tại container PostgreSQL trong môi trường này); stack nghiệm thu chạy trên SQLite trong volume tạm, đã gỡ sạch sau khi xong.
+
+### Thay đổi
+
+**Tính trung thực của trạng thái trạm** — nhóm lỗi nguy hiểm nhất vì nó khiến người trực tin một thiết bị đang sẵn sàng trong khi thiết bị đó không hú được:
+
+- `app/api/stations.py` (nhịp tim HTTP): chỉ ghi `audio_ready`/`client_ready` khi trạm **thật sự có WebSocket**. Trước đây nhịp tim HTTP không có socket vẫn ghi `audio_ready=True` lên bảng trạm, nên dashboard hiện "AUDIO READY" cho thiết bị gửi nhịp tim bằng đường mạng khác (WiFi còn, cáp LAN đứt) — loa không hề kêu.
+- `app/api/stations.py` (đăng ký lại trạm): chỉ đóng socket khi **credential thật sự đổi**. Trước đây endpoint luôn đóng 1008, nên chỉ cần admin sửa tên/vị trí một trạm là mọi thiết bị đang trực của trạm đó rơi vào trạng thái "credential bị từ chối", dừng thử lại vĩnh viễn.
+- `app/api/stations.py` (`PUT /{station_id}`): ghi lại mã trạm **cũ** trước khi ghi đè, và đóng socket dưới mã cũ kèm lý do đọc được. Trước đây socket mồ côi dưới mã cũ không bao giờ nhận được báo động phát theo mã mới, nhưng vẫn được vòng giám sát coi là trạm đang sống.
+- `app/api/health.py`: `websocket` phản ánh trạng thái vòng giám sát nhịp tim thay vì hằng số `"ok"`. Vòng giám sát chết nghĩa là trạm rút điện vẫn hiện ONLINE mãi mãi — đúng loại hỏng im lặng endpoint này tồn tại để phát hiện.
+
+**Mất báo động và đá nhầm phiên**:
+
+- `app/core/websocket_manager.py` (`connect_station`): socket cũ bị đóng bằng mã **4001 "Station session superseded"** thay vì 1000. Đóng sớm ở đây thay cho việc để handler cũ tự phát hiện, nên mã 1000 khiến client coi là đóng bình thường và thử lại sau ~1 giây — hai thiết bị mở cùng mã trạm đá nhau liên tục, mỗi vòng kèm một lượt ghi DB và broadcast. 4001 cho client biết phải chờ lâu (15 giây) và hiện cảnh báo.
+- `app/core/websocket_manager.py` (`broadcast_alarm`): cleanup socket chết truyền kèm danh tính socket. Trước đây gọi `disconnect_station(code)` không danh tính, bị guard danh tính từ chối, nên xác socket nằm lại trong `active_stations` vĩnh viễn và mọi báo động sau đó lại thử gửi vào nó, tốn trọn 1 giây timeout mỗi lượt.
+- `app/core/websocket_manager.py`: thêm thuộc tính `monitor_running` để `/api/health` đọc được trạng thái vòng giám sát.
+
+**Phía frontend** (đã có từ đợt trước, ghi lại đây cho đủ): backoff có jitter + sàn 15 giây cho xung đột phiên (`utils/reconnect.js`), chỉ ACK những báo động thật sự vào hàng đợi hiển thị (`utils/alarmQueue.js`), `verifyPlayback()` chứng minh khả năng phát bằng đúng đường `<audio>` mà báo động thật dùng (`utils/soundPlayer.js`), thông báo sau khi phát phản ánh số trạm thật sự nhận (`OperatorDashboard.jsx`), và cảnh báo khi trạm bị phiên khác chiếm chỗ (`ReceiverStationView.jsx`).
+
+**Hạ tầng phục vụ âm thanh**: `nginx/default.conf` khai báo tường minh kiểu media cho `/assets/audio/`. `mime.types` mặc định của nginx không map `.wav`, nên tệp còi được trả về dưới dạng `application/octet-stream` — trình duyệt có quyền từ chối phát một `<audio>` không có kiểu media hợp lệ, nghĩa là trạm hiện báo động mà loa không kêu.
+
+### Test bổ sung
+
+- `backend/tests/test_p0_regressions.py` (mới, **14 test**): mỗi test tái hiện một lỗi có thật đã sửa — nhịp tim HTTP nói dối về kênh nhận báo động, entry nhịp tim mồ côi, guard danh tính socket, socket cũ không đá được socket mới, `connect_station` không giữ lock khi đóng socket cũ, đếm số trạm đã nhận thật, phát lại báo động đã kết thúc, đóng 1008 khi đổi credential/đổi mã trạm, `/api/health` báo `degraded` khi vòng giám sát chết, và loại báo động bắt buộc có tệp âm thanh.
+- `frontend/tests/reconnect.test.js` (mới, 4 test) và bổ sung vào `alarmQueue.test.js`, `soundPlayer.test.js`.
+
+### Commands/bằng chứng thực chạy
+
+- `python -m pytest tests -q -p no:cacheprovider` trên **DB SQLite tạm mới** (`DATABASE_URL=sqlite+aiosqlite:///$TEMP/rc_full.db`) → **69 passed**, 4 warnings, 65.42s.
+- Riêng `tests/test_p0_regressions.py` → **14 passed**, 5.72s.
+- `npm test` (frontend) → **19 passed, 0 fail**.
+- `npm run build` → **PASS** (281.81 kB js / 29.40 kB css, 1500 modules).
+- `docker compose build` → **exit 0**, cả `redcode-backend` và `redcode-nginx` build thành công.
+- `docker compose up` với override tạm (ENVIRONMENT=development, SQLite trong volume tạm) → cả hai container `Up`. Log backend: **toàn bộ chuỗi Alembic chạy trên DB trắng** (`8280022f67e9 → 20261006_runtime → 20261006_validity → 20261007_permissions → 20261007_integrations`), seed demo thành công, `Station offline monitor active`, `Durable notification outbox worker active`.
+- `GET /api/health` qua nginx → `{"status":"ok","database":"ok","websocket":"ok","n8n":"disabled","active_stations":0,"total_stations":5}`. `GET /` → HTTP 200 (797 B, SPA index).
+- **Khói kiểm thử end-to-end qua nginx** (`$TEMP/rc_e2e_smoke.py`, script tạm chạy ngoài repo) → **23/23 đạt**: đăng nhập admin, đăng ký trạm, tạo nhóm nhận + loại báo động, WebSocket trạm kết nối, health đếm đúng trạm đang trực, phát báo động 201, `target_station_count=1`, `delivered_station_count=1`, trạm nhận `ALARM_TRIGGERED` kèm `server_sequence` và `expires_at`, gói có `audio_sequence`, phát lại cùng `idempotency_key` trả đúng báo động cũ, báo động thứ hai vào hàng đợi đúng thứ tự (5 → 6), trạm nhận báo động thứ hai, `DISPLAYED`/`AUDIO_STARTED` được ghi nhận, hủy báo động 200, trạm nhận `ALARM_CANCELLED`, phát lại sau khi kết thúc bị từ chối **409**, kết nối lại nhận `SYNC_REQUIRED`, đồng bộ trả đúng báo động còn hiệu lực, phiên trạm cũ bị đóng bằng **4001 "Station session superseded"**, nhịp tim token sai bị từ chối **401**, nhịp tim HTTP trả `websocket_connected=false`/`can_receive_alarms=false`.
+- **Khói kiểm thử khởi động lại** (`$TEMP/rc_e2e_restart.py`) → **8/8 đạt**: trạm ONLINE + AUDIO READY trước khi khởi động lại; `docker compose restart backend`; server khoẻ lại; cờ `websocket_connected` và `audio_ready` cũ **đã bị xóa**; trạm hiện OFFLINE; kết nối lại nhận `SYNC_REQUIRED`; báo động còn hiệu lực vẫn đồng bộ được (`ids=[7]`); trạm kết nối lại được đánh ONLINE.
+- `curl /assets/audio/red_code_1.wav` qua nginx → `status=200 type=audio/wav` (trước khi sửa: `application/octet-stream`).
+- Dọn dẹp: `docker compose down -v` — đã gỡ cả hai container, network và hai volume (`redcode_audio_data`, `rc_smoke_data`). `docker ps -a` trở lại đúng trạng thái ban đầu (chỉ còn `metabase`, `c-mssql` đều `Exited`). `backend/redcode.db` của dự án không bị chạm tới.
+
+### Giới hạn
+
+- **Chưa nghiệm thu trên thiết bị thật.** Toàn bộ bằng chứng ở trên là automated test và container; **chưa có** PC Windows kiosk, tablet Android hay Android TV box nào chạy thử. Các tuyên bố về phát âm thanh thực tế, chặn autoplay của trình duyệt, và độ trễ trên LAN 50–100 thiết bị **vẫn chưa có bằng chứng**.
+- **Chưa chạy trên PostgreSQL thật.** Không có container PostgreSQL trong môi trường này và định hướng không cho tạo mới; stack nghiệm thu chạy SQLite. Chuỗi Alembic đã chạy thật trên DB trắng nhưng trên SQLite.
+- **Chưa diễn tập sao lưu/phục hồi** (`pg_dump` khứ hồi) vì không có database PostgreSQL của REDCODE để diễn tập.
+- **Chưa kiểm chứng "n8n chết không ảnh hưởng báo động" ở mức thiết bị thật**; `tests/test_n8n_integration.py` chỉ kiểm tra ở mức API/outbox.
+- `main.py` vẫn chạy `UPDATE users SET enabled=false WHERE role='VIEWER'` mỗi lần khởi động. Đây là dọn tài khoản VIEWER cũ đã bị khai tử (vai trò này không còn tạo được qua API — `test_station_validity.py` khẳng định trả 422), giữ nguyên có chủ ý, không phải lỗi mới.
+- Nhánh `fix/lan-field-bugs-and-test-harness` vẫn còn ở local và remote (đã merge xong).
+
 ## 2026-10-11 — Gỡ wizard thiết lập database và trang Admin n8n, cấu hình chỉ bằng `.env`
 
 Yêu cầu: tài liệu định hướng phát triển mới ("CẬP NHẬT ĐỊNH HƯỚNG PHÁT TRIỂN REDCODETHIENHANH") — PostgreSQL là DB bắt buộc, chỉ kết nối qua `DATABASE_URL`, "cấu hình kết nối một lần khi triển khai", "không cần phát triển thêm cơ chế cài đặt hoặc quản lý database phức tạp"; n8n là tích hợp bổ sung cấu hình bằng webhook URL trong `.env`, "không cần trang Admin quản lý kết nối n8n". Hai câu hỏi kiến trúc đã được xác nhận trước khi thực hiện: **gỡ hẳn wizard, chỉ dùng `.env`** và **chuyển n8n sang `.env`, bỏ trang Admin**.

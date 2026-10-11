@@ -6,7 +6,7 @@ import { api } from '../api/client';
 
 export default function ReceiverStationView() {
   const { user } = useAuth();
-  const { stationConfig, saveStationConfig, isConnected, audioReady, audioError, unlockAudio, testDisplay, testConnection, currentAlarm, activationError, retryConnection } = useWebSocket();
+  const { stationConfig, saveStationConfig, isConnected, audioReady, audioError, unlockAudio, testDisplay, testConnection, currentAlarm, activationError, retryConnection, sessionConflict } = useWebSocket();
   const [stations, setStations] = useState([]);
   const [selected, setSelected] = useState('');
   const [message, setMessage] = useState('');
@@ -42,6 +42,12 @@ export default function ReceiverStationView() {
         {activationError.scope === 'station' && <p className="text-sm">Cách xử lý: Admin đăng nhập một lần trên máy này, chọn lại trạm ở mục bên dưới rồi bấm <strong>XÁC NHẬN THIẾT BỊ NÀY</strong>. Trạm sẽ tự kết nối lại.</p>}
         {activationError.scope === 'dashboard' && <p className="text-sm">Cách xử lý: <Link className="underline" to="/login">đăng nhập lại</Link>.</p>}
         <button className="border border-slate-400 px-4 py-2" onClick={retryConnection}>THỬ LẠI KẾT NỐI</button>
+      </section>}
+      {sessionConflict && !activationError && <section role="alert" className="border-l-4 border-amber-600 bg-white p-4 space-y-2">
+        <h2 className="font-bold text-amber-800">TRẠM ĐANG BỊ CHIẾM BỞI PHIÊN KHÁC</h2>
+        <p>{sessionConflict.message}</p>
+        <p className="text-sm text-slate-600">Mỗi mã trạm chỉ nhận báo động ở một kết nối tại một thời điểm, nên máy chủ giữ phiên mới nhất và đóng phiên cũ.</p>
+        <button className="border border-slate-400 px-4 py-2" onClick={retryConnection}>THỬ LẠI NGAY</button>
       </section>}
       {(!stationConfig || changeDevice || activationError) && <section className="bg-white border p-5 space-y-3">
         <h2 className="font-bold">Xác nhận trạm trên thiết bị này</h2>

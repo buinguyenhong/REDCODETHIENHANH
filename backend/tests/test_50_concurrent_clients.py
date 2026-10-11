@@ -81,9 +81,10 @@ async def test_50_concurrent_stations_broadcast_latency():
         assert last_msg["event"] == "ALARM_TRIGGERED"
         assert last_msg["data"]["alarm_id"] == 9999
 
-    # Cleanup connections
-    for code in mock_sockets:
-        await manager.disconnect_station(code)
+    # Cleanup connections. Phải truyền đúng socket: disconnect_station từ chối
+    # đuổi một kết nối đang sống khi không có danh tính socket để đối chiếu.
+    for code, ws in mock_sockets.items():
+        await manager.disconnect_station(code, ws)
 
 @pytest.mark.asyncio
 async def test_50_concurrent_heartbeats():

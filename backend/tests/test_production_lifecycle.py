@@ -136,7 +136,8 @@ async def test_permission_single_source_updates_missing_denied_and_spoof():
         operator = (await client.post('/api/auth/login', json={'username': 'operator_cc', 'password': 'pass123456'})).json()['access_token']
         op_headers = {'Authorization': f'Bearer {operator}'}
         created = (await client.post('/api/alarm-types', headers=headers, json={
-            'code': 'PERM-' + uuid.uuid4().hex[:8], 'name': 'Permission test', 'allowed_department_ids': [2]
+            'code': 'PERM-' + uuid.uuid4().hex[:8], 'name': 'Permission test', 'allowed_department_ids': [2],
+            'audio_sequence': ['/assets/audio/red_code_1.wav'],
         })).json()
         path = f"/api/alarm-types/{created['id']}"
         payload = {'alarm_type_id': created['id'], 'source_department_id': 9}

@@ -42,7 +42,12 @@ async def lifespan(app: FastAPI):
         for station in previously_online:
             session.add(SystemEvent(station_id=station.id, event_type='DEVICE_DISCONNECTED', severity='WARNING',
                 message='Server startup reconciled previous connection', event_metadata={'reason': 'server_restart'}, created_at=datetime.now(timezone.utc)))
-        await session.execute(update(Station).values(websocket_connected=False, status=StationStatus.OFFLINE.value))
+        await session.execute(update(Station).values(
+            websocket_connected=False,
+            status=StationStatus.OFFLINE.value,
+            audio_ready=False,
+            client_ready=False,
+        ))
         await session.execute(update(User).where(User.role == 'VIEWER').values(enabled=False))
         await session.commit()
     logger.info("Database initialized; production schema is managed by Alembic.")
@@ -121,6 +126,28 @@ async def reject_websocket(websocket: WebSocket, reason: str) -> None:
         logger.debug("Không thể đóng sạch kết nối bị từ chối", exc_info=True)
 
 
+async def station_has_unresolved_alarms(station_code: str) -> bool:
+    """Trạm còn báo động ACTIVE chưa tắt tại chỗ hay không.
+
+    Dùng để chủ động yêu cầu đồng bộ ngay khi trạm kết nối. Không lọc theo
+    ``received_at``: một trạm đã ACK RECEIVED trước khi server khởi động lại vẫn
+    phải được nhắc tải lại, nếu không việc phục hồi phụ thuộc hoàn toàn vào việc
+    client tự giác gọi sync.
+    """
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(
+            select(AlarmStationState.id)
+            .join(Station, Station.id == AlarmStationState.station_id)
+            .join(Alarm, Alarm.id == AlarmStationState.alarm_id)
+            .where(
+                Station.station_code == station_code,
+                Alarm.status == AlarmStatus.ACTIVE.value,
+                AlarmStationState.state != StationAlarmStateEnum.DISMISSED.value,
+            )
+        )).scalars().first()
+    return row is not None
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -161,6 +188,13 @@ async def websocket_endpoint(
                 "server_time": datetime.now(timezone.utc).isoformat()
             }))
 
+            # Chủ động nhắc đồng bộ nếu trạm còn báo động chưa xử lý. Client kiosk
+            # cũng tự gọi sync khi mở socket, nhưng để server làm chủ việc phục hồi
+            # giúp thiết bị nhận theo giao thức (không tự sync) không im lặng mãi
+            # sau khi server khởi động lại.
+            if await station_has_unresolved_alarms(station_code):
+                await websocket.send_text(json.dumps({"type": "SYNC_REQUIRED"}))
+
             while True:
                 data_text = await websocket.receive_text()
                 try:
@@ -173,9 +207,6 @@ async def websocket_endpoint(
                     msg_type = msg.get("type")
 
                     if msg_type == "HEARTBEAT":
-                        if manager.active_stations.get(station_code) is not websocket:
-                            await websocket.close(code=4001, reason="Station session superseded")
-                            return
                         audio_ready = bool(msg.get("audio_ready", False))
                         client_ready = bool(msg.get("client_ready", True))
                         await manager.update_heartbeat(station_code, audio_ready, client_ready)
@@ -205,6 +236,10 @@ async def websocket_endpoint(
                             await websocket.send_text(json.dumps({'type': 'STATION_EVENT_ACK', 'alarm_id': alarm_id, 'event_type': event_type, 'accepted': accepted}))
 
                     elif msg_type == "PING":
+                        # PING cũng chứng minh kênh realtime còn sống. Không làm mới
+                        # đồng hồ ở đây thì một client chỉ dùng PING bị monitor cắt ở
+                        # ngưỡng 15 giây dù hoàn toàn khoẻ.
+                        await manager.touch_station(station_code)
                         await websocket.send_text(json.dumps({"type": "PONG", "request_id": msg.get('request_id'), "server_time": datetime.now(timezone.utc).isoformat()}))
 
                 except json.JSONDecodeError:

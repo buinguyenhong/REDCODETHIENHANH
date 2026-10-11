@@ -196,6 +196,13 @@ export default function AdminDashboard() {
 
   const saveAlarmType = async (e) => {
     e.preventDefault();
+    // Một mã báo động không có tệp âm thanh vẫn hiện trên màn hình trạm nhưng
+    // không hú ở đâu cả. Chặn ngay tại đây thay vì để phát hiện trong ca cấp cứu.
+    const audioSequence = alarmTypeForm.audio_file_path.split('\n').map(path => path.trim()).filter(Boolean);
+    if (audioSequence.length === 0) {
+      notify('Cần chọn ít nhất một tệp âm thanh cho mã báo động');
+      return;
+    }
     try {
       const payload = {
         code: alarmTypeForm.code.trim().toUpperCase(),
@@ -204,7 +211,7 @@ export default function AdminDashboard() {
         priority: parseInt(alarmTypeForm.priority, 10),
         display_color: alarmTypeForm.display_color,
         receiver_group_id: alarmTypeForm.receiver_group_id ? parseInt(alarmTypeForm.receiver_group_id, 10) : null,
-        audio_sequence: alarmTypeForm.audio_file_path.split('\n').map(path => path.trim()).filter(Boolean),
+        audio_sequence: audioSequence,
         repeat_count: parseInt(alarmTypeForm.repeat_count, 10),
         repeat_interval_ms: parseInt(alarmTypeForm.repeat_interval_ms, 10),
         validity_seconds: Number(alarmTypeForm.validity_seconds),
@@ -630,6 +637,9 @@ export default function AdminDashboard() {
                 <tbody className="divide-y divide-slate-100">
                   {stations.map((st) => {
                     const isOnline = st.status === 'ONLINE';
+                    // Trạm có thể còn nhịp tim nhưng không có WebSocket — khi đó nó KHÔNG
+                    // nhận được báo động nào. Hiện ONLINE xanh cho ca này là nói dối.
+                    const cannotReceive = isOnline && st.websocket_connected === false;
                     return (
                       <tr key={st.id} className="hover:bg-slate-50 transition">
                         <td className="py-3 px-4 font-bold text-slate-900">{st.station_code}</td>
@@ -640,13 +650,15 @@ export default function AdminDashboard() {
                         <td className="py-3 px-4">
                           <span
                             className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full font-bold text-[11px] ${
-                              isOnline
+                              cannotReceive
+                                ? 'bg-red-50 text-red-700 border border-red-300'
+                                : isOnline
                                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                 : 'bg-slate-100 text-slate-500'
                             }`}
                           >
-                            <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                            <span>{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+                            <span className={`w-2 h-2 rounded-full ${cannotReceive ? 'bg-red-500 animate-pulse' : isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                            <span>{cannotReceive ? 'KHÔNG NHẬN BÁO ĐỘNG' : isOnline ? 'ONLINE' : 'OFFLINE'}</span>
                           </span>
                         </td>
                         <td className="py-3 px-4">
@@ -1205,9 +1217,10 @@ export default function AdminDashboard() {
                   <select
                     value={alarmTypeForm.audio_file_path}
                     onChange={(e) => setAlarmTypeForm({ ...alarmTypeForm, audio_file_path: e.target.value })}
+                    required
                     className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-900 font-mono focus:border-red-500 focus:outline-none"
                   >
-                    <option value="">-- Không phát âm thanh --</option>
+                    <option value="">-- Chọn tệp âm thanh (bắt buộc) --</option>
                     {audioFiles.map((af) => (
                       <option key={af.id} value={af.file_path}>
                         {af.code} — {af.name} ({af.file_path})

@@ -12,7 +12,10 @@ export default function AlarmOverlay() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col justify-between overflow-y-auto p-4 md:p-12 text-white select-none"
+      // z-[100]: các modal trong trang quản trị dùng z-50. Nếu lớp báo động chỉ
+      // ngang cấp, thứ tự DOM quyết định ai nổi hơn — nghĩa là một hộp thoại
+      // đang mở có thể che mất báo động cấp cứu. Báo động y tế luôn phải trên cùng.
+      className="fixed inset-0 z-[100] flex flex-col justify-between overflow-y-auto p-4 md:p-12 text-white select-none"
       style={{ backgroundColor: bgColor }}
     >
       {/* Top Banner: Audio Status & Queue indicator */}

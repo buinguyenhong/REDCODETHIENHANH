@@ -29,15 +29,72 @@ class SoundPlayer {
       }
     }
 
-    // Audible test; production does not seed the demo WAV file.
+    // Xác minh bằng ĐÚNG đường ống mà báo động thật dùng, không phải WebAudio.
     try {
-      await this.playTestTone();
-      this.isAudioReady = true;
+      await this.verifyPlayback();
       return true;
     } catch (err) {
       console.log('Audio autoplay still restricted by browser:', err);
-      this.isAudioReady = false;
       return false;
+    }
+  }
+
+  /**
+   * Sinh một tệp WAV ngắn ngay trong trình duyệt để thử phát.
+   *
+   * Không phụ thuộc tệp còi thật: production không seed sẵn file demo, mà phép
+   * thử này chỉ cần một nguồn audio hợp lệ để trình duyệt quyết định cho phát hay không.
+   */
+  buildProbeWavDataUri(durationSeconds = 0.35, frequency = 880) {
+    const sampleRate = 8000;
+    const samples = Math.floor(sampleRate * durationSeconds);
+    const buffer = new ArrayBuffer(44 + samples * 2);
+    const view = new DataView(buffer);
+    const writeAscii = (offset, text) => {
+      for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+    writeAscii(0, 'RIFF');
+    view.setUint32(4, 36 + samples * 2, true);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);                 // PCM
+    view.setUint16(22, 1, true);                 // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);    // byte rate
+    view.setUint16(32, 2, true);                 // block align
+    view.setUint16(34, 16, true);                // bits per sample
+    writeAscii(36, 'data');
+    view.setUint32(40, samples * 2, true);
+    for (let i = 0; i < samples; i++) {
+      const fade = Math.min(1, i / 200, (samples - i) / 200);
+      view.setInt16(44 + i * 2, Math.sin((2 * Math.PI * frequency * i) / sampleRate) * 0.3 * fade * 32767, true);
+    }
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return `data:audio/wav;base64,${btoa(binary)}`;
+  }
+
+  /**
+   * Chứng minh thiết bị THẬT SỰ phát được âm thanh báo động.
+   *
+   * Báo động thật phát qua ``new Audio(url)`` (HTMLAudioElement), còn phép thử cũ
+   * chỉ dùng OscillatorNode của WebAudio. Hai đường ống này có chính sách autoplay
+   * riêng: WebAudio chạy được sau một cú chạm KHÔNG bảo đảm thẻ <audio> phát được.
+   * Vì vậy cờ sẵn sàng chỉ được bật khi chính đường ống <audio> đã phát thành công.
+   */
+  async verifyPlayback() {
+    if (this.isPlaying) throw new Error('Đang phát cảnh báo; không thực hiện test');
+    try {
+      const probe = new Audio(this.buildProbeWavDataUri());
+      await probe.play();
+      probe.pause();
+      this.isAudioReady = true;
+      return true;
+    } catch (e) {
+      this.isAudioReady = false;
+      throw e;
     }
   }
 
@@ -122,7 +179,9 @@ class SoundPlayer {
       osc.start();
       osc.stop(ctx.currentTime + 0.5);
       await new Promise((resolve) => { osc.onended = resolve; });
-      this.isAudioReady = true;
+      // KHÔNG đặt isAudioReady = true ở đây: tiếng bíp WebAudio chỉ chứng minh
+      // AudioContext chạy được, không chứng minh thẻ <audio> mà báo động thật dùng
+      // phát được. Muốn bật cờ sẵn sàng phải dùng verifyPlayback().
       return true;
     } catch (e) {
       console.warn('Tone test error:', e);

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from app.core.alarm_lifecycle import expire_alarms, broadcast_terminal_alarm
 from typing import List, Optional
@@ -14,12 +15,33 @@ from app.models import (
     AlarmStationState, StationAlarmStateEnum,
     DepartmentAlarmPermission, NotificationOutbox, OutboxStatus
 )
-from app.schemas import AlarmCreate, AlarmOut, AlarmEventOut
+from app.schemas import AlarmCreate, AlarmOut, AlarmCreateOut, AlarmEventOut
 from app.core.websocket_manager import manager
 from app.config import settings
 from app.api.deps import get_current_user, get_current_operator_or_admin
 
 router = APIRouter(prefix="/alarms", tags=["Alarms"])
+
+logger = logging.getLogger("redcode.alarms")
+
+
+def replay_or_conflict(existing, same_request):
+    """Phản hồi cho một yêu cầu trùng ``idempotency_key`` đã có bản ghi.
+
+    - Khác nội dung  -> 409: khóa đã bị dùng cho yêu cầu khác.
+    - Còn ACTIVE     -> trả lại chính báo động đó (phát lại idempotent thật sự).
+    - Đã kết thúc    -> 409: bản ghi cũ đã EXPIRED/CANCELLED, trả nó như một lần
+      tạo mới sẽ khiến người trực tưởng vừa phát được báo động đang hiệu lực
+      trong khi không còi nào hú. Báo rõ để client phát lại bằng khóa mới.
+    """
+    if not same_request(existing):
+        raise HTTPException(status_code=409, detail='Idempotency key đã được sử dụng cho yêu cầu khác')
+    if existing.status != AlarmStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f'Yêu cầu này đã được xử lý trước đó và báo động đã kết thúc ({existing.status}); hãy phát lại bằng yêu cầu mới'
+        )
+    return AlarmOut.model_validate(existing)
 
 class SequenceGenerator:
     _lock = asyncio.Lock()
@@ -89,7 +111,7 @@ async def get_alarm(
         raise HTTPException(status_code=404, detail="Không tìm thấy báo động")
     return AlarmOut.model_validate(alarm)
 
-@router.post("", response_model=AlarmOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=AlarmCreateOut, status_code=status.HTTP_201_CREATED)
 async def create_alarm(
     alarm_in: AlarmCreate,
     db: AsyncSession = Depends(get_db),
@@ -130,9 +152,7 @@ async def create_alarm(
         )
         existing = (await db.execute(stmt)).scalar_one_or_none()
         if existing:
-            if not same_request(existing):
-                raise HTTPException(status_code=409, detail='Idempotency key đã được sử dụng cho yêu cầu khác')
-            return AlarmOut.model_validate(existing)
+            return replay_or_conflict(existing, same_request)
 
     # 2. Validate Alarm Type
     alarm_type = await db.get(AlarmType, alarm_in.alarm_type_id)
@@ -209,10 +229,12 @@ async def create_alarm(
             )
             existing = (await db.execute(existing_stmt)).scalar_one_or_none()
             if existing:
-                if not same_request(existing):
-                    raise HTTPException(status_code=409, detail='Idempotency key đã được sử dụng cho yêu cầu khác')
-                return AlarmOut.model_validate(existing)
-        raise HTTPException(status_code=409, detail="Yêu cầu kích hoạt trùng lặp")
+                return replay_or_conflict(existing, same_request)
+        # IntegrityError không chỉ có nghĩa "trùng yêu cầu": nó còn là vi phạm khóa
+        # ngoại, NOT NULL hay CHECK. Gán vội nhãn "trùng lặp" sẽ khiến người trực bỏ
+        # qua một lỗi ghi thật và tin rằng báo động đã được phát.
+        logger.exception("Không ghi được báo động mới (idempotency_key=%s)", alarm_in.idempotency_key)
+        raise HTTPException(status_code=500, detail='Lỗi ghi cơ sở dữ liệu khi tạo báo động — báo động CHƯA được phát')
 
     # 7. Determine target stations from Receiver Group and initialize alarm_station_states
     target_station_codes = None
@@ -232,7 +254,6 @@ async def create_alarm(
     target_station_codes = [s.station_code for s in target_stations]
 
     for st in target_stations:
-        is_online = st.station_code in manager.active_stations
         initial_state = StationAlarmStateEnum.PENDING.value
         st_state = AlarmStationState(
             alarm_id=alarm.id,
@@ -305,7 +326,7 @@ async def create_alarm(
         "created_at": now.isoformat()
         , "expires_at": alarm.expires_at.isoformat(), "server_time": now.isoformat()
     }
-    await manager.broadcast_alarm(broadcast_payload, target_station_codes=target_station_codes)
+    delivery = await manager.broadcast_alarm(broadcast_payload, target_station_codes=target_station_codes)
 
     # Load complete alarm model for response
     res_stmt = (
@@ -320,7 +341,10 @@ async def create_alarm(
         .where(Alarm.id == alarm.id)
     )
     alarm_full = (await db.execute(res_stmt)).scalar_one()
-    return AlarmOut.model_validate(alarm_full)
+    out = AlarmCreateOut.model_validate(alarm_full)
+    out.target_station_count = len(target_station_codes or [])
+    out.delivered_station_count = delivery["delivered"]
+    return out
 
 @router.post("/{alarm_id}/cancel", response_model=AlarmOut)
 async def cancel_alarm(

@@ -18,7 +18,11 @@ async def get_health(db: AsyncSession = Depends(get_db)):
     except Exception:
         db_status = "error"
 
-    ws_status = "ok"
+    # Vòng giám sát nhịp tim chết nghĩa là trạm rút điện vẫn hiện ONLINE mãi mãi.
+    # Trả "ok" cố định ở đây che mất đúng loại hỏng im lặng mà endpoint này tồn tại
+    # để phát hiện. Không có kết nối nào là chuyện bình thường (đêm khuya, chưa
+    # triển khai), nên chỉ báo degraded khi vòng giám sát không chạy.
+    ws_status = "ok" if manager.monitor_running else "degraded"
 
     n8n_status = "disabled"
     # n8n là tích hợp bổ sung, cấu hình bằng biến môi trường. Trạng thái của nó

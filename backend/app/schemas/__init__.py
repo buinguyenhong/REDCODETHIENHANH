@@ -142,7 +142,11 @@ class AlarmTypeBase(BaseModel):
         return value
 
 class AlarmTypeCreate(AlarmTypeBase):
-    pass
+    # Bắt buộc khai báo ít nhất một tệp âm thanh. Một loại báo động không có âm
+    # thanh vẫn hiện trên màn hình trạm nhưng KHÔNG hú ở bất kỳ đâu — hỏng im
+    # lặng đúng loại hệ thống này không được phép có. Chặn ngay khi cấu hình,
+    # thay vì để phát hiện lúc có ca cấp cứu thật.
+    audio_sequence: List[str] = Field(..., min_length=1)
 
 class AlarmTypeUpdate(BaseModel):
     name: Optional[str] = None
@@ -157,6 +161,15 @@ class AlarmTypeUpdate(BaseModel):
     repeat_interval_ms: Optional[int] = Field(default=None, ge=0, le=600000)
     validity_seconds: Optional[int] = Field(default=None, ge=10, le=86400)
     _local_audio = field_validator('audio_sequence')(AlarmTypeBase.local_audio.__func__)
+
+    @field_validator('audio_sequence')
+    @classmethod
+    def audio_sequence_not_empty(cls, value):
+        # None = "không đổi cấu hình hiện có". Gửi danh sách rỗng là chủ ý làm
+        # báo động câm, nên bị chặn giống như lúc tạo mới.
+        if value is not None and len(value) == 0:
+            raise ValueError('Cần ít nhất một tệp âm thanh — báo động không có âm thanh sẽ không hú ở trạm nào')
+        return value
 
 class AlarmTypeOut(AlarmTypeBase):
     id: int
@@ -238,6 +251,17 @@ class AlarmOut(BaseModel):
     @classmethod
     def utc_timestamps(cls, value):
         return value.replace(tzinfo=timezone.utc) if isinstance(value, datetime) and value.tzinfo is None else value
+
+
+class AlarmCreateOut(AlarmOut):
+    """Phản hồi khi kích hoạt báo động, kèm số liệu phát thực tế.
+
+    Mở rộng thêm của AlarmOut nên không phá vỡ hợp đồng cũ. Người trực cần biết
+    báo động tới được bao nhiêu trạm trong tổng số trạm đích: "đã phát tới 12
+    trạm, 9 trạm đang trực tuyến" khác hẳn với "đã phát tới mọi trạm".
+    """
+    target_station_count: int = 0
+    delivered_station_count: int = 0
 
 # --- Notification Outbox ---
 class NotificationOutboxOut(BaseModel):

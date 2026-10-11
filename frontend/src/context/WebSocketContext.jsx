@@ -2,10 +2,21 @@ import { createContext, useContext, useEffect, useState, useRef, useCallback } f
 import { soundPlayer } from '../utils/soundPlayer';
 import { api } from '../api/client';
 import { useAuth } from './AuthContext';
-import { mergeAlarmQueue } from '../utils/alarmQueue';
+import { mergeAlarmQueue, alarmsToAcknowledge } from '../utils/alarmQueue';
+import { reconnectDelay, SESSION_CONFLICT_RETRY_MS } from '../utils/reconnect';
 import { randomId } from '../utils/uuid';
 
 const WebSocketContext = createContext(null);
+
+// Ngưỡng mất nhịp tim phía client, tính bằng ms. Phải khớp với
+// STATION_OFFLINE_THRESHOLD_SECONDS (15) mà máy chủ dùng để cắt kết nối: client
+// gửi nhịp 5 giây một lần nên 15 giây = 3 nhịp liên tiếp không có phản hồi.
+// Giá trị cũ 20000 lệch với con số 15 giây mà chính giao diện trạm ghi ra.
+const HEARTBEAT_ACK_TIMEOUT_MS = 15000;
+
+// Chờ tối thiểu khi trạm bị phiên khác chiếm chỗ (đóng 4001). Thử lại theo backoff
+// thường sẽ đá nhau mỗi ~1 giây vô hạn vì onopen luôn đặt lại bộ đếm.
+// (Giá trị nằm trong utils/reconnect.js để test được.)
 
 export function WebSocketProvider({ children }) {
   const { token } = useAuth();
@@ -22,6 +33,9 @@ export function WebSocketProvider({ children }) {
   // được xác nhận lại, nên trạm phải báo rõ thay vì retry im lặng.
   const [activationError, setActivationError] = useState(null);
   const activationBlockedRef = useRef(false);
+  // Trạm bị một phiên khác chiếm chỗ (đóng 4001). Khác với activationError: đây
+  // không phải lỗi credential nên vẫn tự thử lại, chỉ chậm hơn nhiều.
+  const [sessionConflict, setSessionConflict] = useState(null);
 
   // Station info from localStorage if configured
   const [stationConfig, setStationConfig] = useState(() => {
@@ -38,6 +52,10 @@ export function WebSocketProvider({ children }) {
   const [audioRetry, setAudioRetry] = useState(0);
   const syncRetryRef = useRef(null);
   const dismissedRef = useRef(new Set(JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]').map(item => item.alarm_id)));
+  // Bản sao hàng đợi để synchronize() tính được đúng tập báo động đã vào hiển thị
+  // mà không phải chạy side-effect bên trong hàm cập nhật state.
+  const activeAlarmsRef = useRef([]);
+  useEffect(() => { activeAlarmsRef.current = activeAlarms; }, [activeAlarms]);
   const ordered = (alarms) => mergeAlarmQueue([], alarms, dismissedRef.current, Date.now() + serverOffsetRef.current);
 
   const saveStationConfig = (config) => {
@@ -48,6 +66,7 @@ export function WebSocketProvider({ children }) {
     setActiveAlarms([]);
     activationBlockedRef.current = false;
     setActivationError(null);
+    setSessionConflict(null);
     setStationConfig(config);
     if (config) {
       localStorage.setItem('redcode_station_config', JSON.stringify(config));
@@ -79,9 +98,14 @@ export function WebSocketProvider({ children }) {
     }
     if (alarms[0]?.server_time) serverOffsetRef.current = Date.parse(alarms[0].server_time) - Date.now();
     if (disposedRef.current || wsRef.current !== socket) return;
-    setActiveAlarms(prev => mergeAlarmQueue(prev, alarms, dismissedRef.current, Date.now() + serverOffsetRef.current, startedAt));
-    for (const alarm of alarms) {
-      if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'RECEIVED', alarm_id: alarm.alarm_id }));
+    const merged = mergeAlarmQueue(activeAlarmsRef.current, alarms, dismissedRef.current, Date.now() + serverOffsetRef.current, startedAt);
+    setActiveAlarms(merged);
+
+    // Chỉ ACK những báo động THẬT SỰ vào hàng đợi hiển thị (xem alarmsToAcknowledge).
+    for (const alarmId of alarmsToAcknowledge(alarms, merged)) {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'RECEIVED', alarm_id: alarmId }));
+      }
     }
   };
 
@@ -111,6 +135,7 @@ export function WebSocketProvider({ children }) {
         setIsConnected(true);
         reconnectAttemptsRef.current = 0;
         setActivationError(null);
+        setSessionConflict(null);
         console.log('[WebSocket] Kết nối thành công tới máy chủ Redcode');
 
         // Sync missed/active alarms for this station on connect/reconnect
@@ -122,7 +147,7 @@ export function WebSocketProvider({ children }) {
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            if (Date.now() - lastHeartbeatAckRef.current > 20000) { ws.close(); return; }
+            if (Date.now() - lastHeartbeatAckRef.current > HEARTBEAT_ACK_TIMEOUT_MS) { ws.close(); return; }
             ws.send(JSON.stringify({
               type: stationConfig?.device_token ? 'HEARTBEAT' : 'PING',
               audio_ready: soundPlayer.isAudioReady,
@@ -167,6 +192,20 @@ export function WebSocketProvider({ children }) {
           return;
         }
 
+        // 4001 = trạm này vừa bị một phiên khác chiếm chỗ (mở cùng station_code ở
+        // tab hoặc máy khác). Không phải lỗi credential nên vẫn thử lại, nhưng
+        // phải chờ lâu: onopen luôn đặt lại bộ đếm nên backoff thường sẽ cho ra
+        // đúng 1 giây mỗi vòng — hai máy đá nhau vô hạn, mỗi vòng kèm một lượt ghi
+        // DB và broadcast STATION_STATUS.
+        if (event.code === 4001) {
+          setSessionConflict({
+            message: 'Trạm này đang được mở ở một thiết bị hoặc tab khác. Thiết bị này sẽ tự thử lại sau 15 giây; hãy đóng phiên còn lại nếu đây mới là máy trực.',
+          });
+          console.warn('[WebSocket] Phiên trạm bị chiếm chỗ (4001):', event.reason || '(không có lý do)');
+          scheduleReconnect(SESSION_CONFLICT_RETRY_MS);
+          return;
+        }
+
         scheduleReconnect();
       };
 
@@ -180,10 +219,13 @@ export function WebSocketProvider({ children }) {
     }
   }, [stationConfig, token]);
 
-  const scheduleReconnect = () => {
+  const scheduleReconnect = (minDelayMs = 0) => {
     if (disposedRef.current) return;
     if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), 10000);
+    // Jitter nằm trong reconnectDelay(): sau khi máy chủ khởi động lại, toàn bộ
+    // 50–100 trạm nhận onclose cùng một giây; không jitter thì chúng dập vào máy
+    // chủ đồng loạt.
+    const delay = reconnectDelay(reconnectAttemptsRef.current, Math.random, minDelayMs);
     reconnectAttemptsRef.current++;
     reconnectTimeoutRef.current = setTimeout(() => {
       console.log(`[WebSocket] Thử kết nối lại (lần ${reconnectAttemptsRef.current})...`);
@@ -235,7 +277,10 @@ export function WebSocketProvider({ children }) {
 
       case 'AUDIO_TEST':
         console.log('[WebSocket] Nhận lệnh kiểm tra âm thanh từ Admin');
-        soundPlayer.playTestTone().then(() => setAudioReady(true)).catch(() => setAudioReady(false));
+        // Dùng verifyPlayback (đường ống <audio> thật) chứ không dùng tiếng bíp
+        // WebAudio: lệnh này để trả lời câu hỏi "trạm này có hú được không", nên
+        // phải thử đúng thứ mà báo động thật dùng.
+        soundPlayer.verifyPlayback().then(() => setAudioReady(true)).catch(() => setAudioReady(false));
         break;
       case 'SYNC_REQUIRED':
         synchronize().catch((err) => console.warn('Lỗi đồng bộ:', err));
@@ -316,6 +361,20 @@ export function WebSocketProvider({ children }) {
             }
           }
         );
+      } else {
+        // Báo động không có tệp âm thanh: vẫn hiện trên màn hình nhưng không hú ở
+        // đâu cả. Im lặng bỏ qua là kiểu hỏng tệ nhất — trạm trông như đã nhận báo
+        // động mà không ai nghe thấy gì, và nhật ký không ghi lại điều gì bất thường.
+        setAudioReady(false);
+        setAudioError('Báo động này không có tệp âm thanh để phát — trạm không thể hú');
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
+          wsRef.current.send(JSON.stringify({
+            type: 'STATION_EVENT',
+            event_type: 'AUDIO_FAILED',
+            alarm_id: currentAlarm.alarm_id,
+            metadata: { station_code: stationConfig.station_code, error: 'Báo động không có tệp âm thanh' }
+          }));
+        }
       }
     } else {
       soundPlayer.stop();
@@ -393,6 +452,7 @@ export function WebSocketProvider({ children }) {
   const retryConnection = () => {
     activationBlockedRef.current = false;
     setActivationError(null);
+    setSessionConflict(null);
     reconnectAttemptsRef.current = 0;
     connect();
   };
@@ -414,6 +474,7 @@ export function WebSocketProvider({ children }) {
         unlockAudio,
         activationError,
         retryConnection,
+        sessionConflict,
         stationConfig,
         saveStationConfig,
         lastAck,

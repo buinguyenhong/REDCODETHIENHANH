@@ -103,8 +103,10 @@ async def register_station(
 
     client_ip = request.client.host if request.client else None
 
+    credential_rotated = False
     if station:
         # Update existing station
+        credential_rotated = station.device_token_hash != token_hash
         station.name = reg.name
         station.department_id = reg.department_id
         station.location = reg.location
@@ -127,9 +129,16 @@ async def register_station(
 
     await db.commit()
     await db.refresh(station)
-    old_socket = manager.active_stations.get(station.station_code)
-    if old_socket:
-        await old_socket.close(code=1008, reason='Station credential rotated')
+    # Chỉ đóng socket khi credential THẬT SỰ đổi. Mã 1008 khiến thiết bị dừng thử
+    # lại vĩnh viễn và chờ người xác nhận lại — hợp lý khi token bị thu hồi, nhưng
+    # endpoint này còn dùng để đổi tên/vị trí trạm. Đóng 1008 trong trường hợp đó
+    # (dù token không đổi) làm mọi trạm đang trực rơi vào trạng thái "bị từ chối
+    # credential" chỉ vì admin sửa tên thiết bị.
+    if credential_rotated:
+        old_socket = manager.active_stations.get(station.station_code)
+        if old_socket:
+            await manager.disconnect_station(station.station_code, old_socket)
+            await old_socket.close(code=1008, reason='Station credential rotated')
 
     if reg.receiver_group_ids:
         await db.execute(
@@ -181,25 +190,49 @@ async def station_heartbeat(
 
     now = datetime.now(timezone.utc)
     client_ip = hb.ip_address or (request.client.host if request.client else station.ip_address)
-    
+
+    # Trạm còn sống (có heartbeat) KHÁC với trạm nhận được báo động (phải có WebSocket).
+    # broadcast_alarm chỉ gửi cho manager.active_stations, nên ghi websocket_connected=True
+    # cho một trạm không có socket sẽ khiến dashboard hiện ONLINE trong khi trạm đó không
+    # bao giờ nhận được báo động nào — mất báo động âm thầm.
+    ws_connected = hb.station_code in manager.active_stations
+
     station.last_seen_at = now
-    station.websocket_connected = True
-    station.audio_ready = hb.audio_ready
-    station.client_ready = hb.client_ready
+    station.websocket_connected = ws_connected
+    if ws_connected:
+        # Cờ sẵn sàng chỉ có giá trị khi có kênh nhận báo động. Nhịp tim HTTP tới
+        # từ một trạm KHÔNG có WebSocket không chứng minh được điều gì về khả năng
+        # nhận báo động hay phát âm thanh của nó — thiết bị gửi nhịp tim bằng một
+        # đường mạng khác (WiFi còn, cáp LAN đứt; hoặc một máy trạm khác gửi hộ)
+        # vẫn ghi audio_ready=True trong khi loa không hề kêu. Ghi cờ đó lên bảng
+        # trạm là dựng lại đúng lời nói dối "AUDIO READY" mà endpoint này vừa sửa
+        # ở websocket_connected. Trạm không có socket thì cờ sẵn sàng phải là false.
+        station.audio_ready = hb.audio_ready
+        station.client_ready = hb.client_ready
+    else:
+        station.audio_ready = False
+        station.client_ready = False
     station.status = StationStatus.ONLINE.value
     station.ip_address = client_ip
     station.updated_at = now
 
     await db.commit()
 
-    # Inform WebSocket manager
-    await manager.update_heartbeat(
-        station_code=hb.station_code,
-        audio_ready=hb.audio_ready,
-        client_ready=hb.client_ready
-    )
+    # Inform WebSocket manager. Chỉ gọi khi trạm thật sự có socket: một nhịp tim
+    # HTTP không chứng minh được khả năng nhận báo động hay phát âm thanh.
+    if ws_connected:
+        await manager.update_heartbeat(
+            station_code=hb.station_code,
+            audio_ready=hb.audio_ready,
+            client_ready=hb.client_ready
+        )
 
-    return {"status": "ok", "timestamp": now.isoformat()}
+    return {
+        "status": "ok",
+        "websocket_connected": ws_connected,
+        "can_receive_alarms": ws_connected,
+        "timestamp": now.isoformat(),
+    }
 
 @router.get("/{station_code}/active-alarms")
 async def get_station_active_alarms(
@@ -417,6 +450,11 @@ async def update_station(
     if not station:
         raise HTTPException(status_code=404, detail="Không tìm thấy trạm nhận")
 
+    # Ghi lại mã cũ trước khi ghi đè: socket của trạm nằm trong manager dưới mã CŨ.
+    # Tra cứu bằng mã mới sau khi đổi mã sẽ không thấy gì, để lại một socket mồ côi
+    # không bao giờ nhận được báo động (báo động phát theo mã mới trong DB).
+    previous_code = station.station_code
+
     station.station_code = reg.station_code
     station.name = reg.name
     station.department_id = reg.department_id
@@ -436,10 +474,26 @@ async def update_station(
             db.add(ReceiverGroupStation(receiver_group_id=gid, station_id=station.id))
 
     await db.commit()
-    if not station.enabled or raw_token:
-        ws = manager.active_stations.get(station.station_code)
+    # Đóng socket đang giữ trạm khi credential bị thu hồi, trạm bị khóa, hoặc mã
+    # trạm vừa đổi. Kèm lý do đọc được: client hiển thị lý do này cho người trực,
+    # còn 1008 không có lý do thì họ chỉ thấy một câu chung chung. Truyền kèm danh
+    # tính socket để lời gọi đi qua đúng guard của disconnect_station.
+    #
+    # Đổi mã trạm cũng phải đóng: socket cũ vẫn nằm trong manager dưới mã CŨ, nên
+    # báo động phát theo mã mới không bao giờ tới được thiết bị đó, còn vòng giám
+    # sát vẫn coi mã cũ là một trạm đang sống.
+    reason = None
+    if not station.enabled:
+        reason = 'Station disabled by administrator'
+    elif raw_token:
+        reason = 'Station credential rotated'
+    elif previous_code != station.station_code:
+        reason = 'Station code changed; re-provision this device'
+    if reason:
+        ws = manager.active_stations.get(previous_code)
         if ws:
-            await ws.close(code=1008)
+            await manager.disconnect_station(previous_code, ws)
+            await ws.close(code=1008, reason=reason)
     stmt = (
         select(Station)
         .options(selectinload(Station.department), selectinload(Station.receiver_groups))

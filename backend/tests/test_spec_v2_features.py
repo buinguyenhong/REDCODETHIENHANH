@@ -70,7 +70,8 @@ async def test_department_authorization_restriction():
             "name": "Mã hạn chế khoa",
             "priority": 1,
             "display_color": "#ff0000",
-            "allowed_department_ids": [cc_dept["id"]] # Only Khoa Cấp cứu
+            "allowed_department_ids": [cc_dept["id"]], # Only Khoa Cấp cứu
+            "audio_sequence": ["/assets/audio/red_code_1.wav"]
         })
         assert create_type_res.status_code == 201
         restricted_type_id = create_type_res.json()["id"]

@@ -56,7 +56,7 @@ async def test_validity_setting_snapshotted():
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
         token = (await client.post('/api/auth/login', json={'username': 'admin', 'password': 'admin123456'})).json()['access_token']
         headers = {'Authorization': f'Bearer {token}'}
-        created = await client.post('/api/alarm-types', headers=headers, json={'code': 'VALIDITY_' + uuid.uuid4().hex[:8], 'name': 'Validity', 'validity_seconds': 60})
+        created = await client.post('/api/alarm-types', headers=headers, json={'code': 'VALIDITY_' + uuid.uuid4().hex[:8], 'name': 'Validity', 'validity_seconds': 60, 'audio_sequence': ['/assets/audio/red_code_1.wav']})
         alarm_type = created.json()
         assert created.status_code == 201
         assert (await client.put(f"/api/alarm-types/{alarm_type['id']}", headers=headers, json={'validity_seconds': 0})).status_code == 422

@@ -72,17 +72,29 @@ export default function OperatorDashboard() {
       };
       const fingerprint = JSON.stringify(payload);
       if (requestRef.current?.fingerprint !== fingerprint) requestRef.current = { fingerprint, key: randomId() };
-      await api.createAlarm({ ...payload, idempotency_key: requestRef.current.key });
+      const result = await api.createAlarm({ ...payload, idempotency_key: requestRef.current.key });
       requestRef.current = null;
 
+      // "Đã phát thành công tới các trạm nhận" là câu nói dối khi phần lớn trạm
+      // đang offline: báo động vẫn ACTIVE trong DB nhưng không còi nào hú. Nói
+      // đúng số trạm đã nhận trên tổng số trạm đích để người trực biết có cần
+      // gọi điện nhắc khoa hay không.
+      const targets = result?.target_station_count ?? 0;
+      const delivered = result?.delivered_station_count ?? 0;
       setStatusMessage({
-        type: 'success',
-        text: `Đã phát thành công tín hiệu ${selectedType.code} tới các trạm nhận!`,
+        type: delivered > 0 ? 'success' : 'error',
+        text: delivered > 0
+          ? `Đã phát ${selectedType.code} tới ${delivered}/${targets} trạm nhận đang trực tuyến. ${targets - delivered} trạm đang offline sẽ nhận được khi kết nối lại nếu báo động còn hiệu lực.`
+          : `Đã ghi nhận báo động ${selectedType.code} nhưng KHÔNG trạm nào đang trực tuyến — hiện chưa có còi nào hú. ${targets} trạm sẽ nhận được khi kết nối lại nếu báo động còn hiệu lực.`,
       });
       setLocation('');
       setNote('');
       loadRecentAlarms();
     } catch (err) {
+      // 409 = khóa idempotency đã gắn với một yêu cầu khác, hoặc yêu cầu trước đã
+      // kết thúc. Giữ nguyên khóa cũ thì lần bấm sau mãi nhận lại đúng lỗi đó;
+      // xóa để lần bấm kế tiếp là một yêu cầu phát mới thật sự.
+      if (err?.status === 409) requestRef.current = null;
       setStatusMessage({
         type: 'error',
         text: `Lỗi phát cảnh báo: ${err.message}`,
@@ -115,7 +127,9 @@ export default function OperatorDashboard() {
             }`}
           >
             <div className="flex items-center space-x-3">
-              <CheckCircle className="w-5 h-5 shrink-0 text-emerald-600" />
+              {statusMessage.type === 'success'
+                ? <CheckCircle className="w-5 h-5 shrink-0 text-emerald-600" />
+                : <AlertCircle className="w-5 h-5 shrink-0 text-red-600" />}
               <span className="font-semibold text-sm">{statusMessage.text}</span>
             </div>
             <button
