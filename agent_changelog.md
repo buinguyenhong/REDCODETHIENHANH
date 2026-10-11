@@ -93,10 +93,19 @@ npm run build
 
 Sau khi chạy xong, `git status` xác nhận các file nguồn chỉ còn đúng các sửa đã dự định (không sót bản hoàn nguyên nào).
 
+### Bằng chứng CI
+
+- Commit `522a794`, push `main` (`2116c52..522a794`). Truy vấn GitHub API: run **`38122984061`**, head_sha `522a794ffd3c996c890aaecdea937c2a51c8612d`, event `push`, branch `main`, tạo `2026-10-11T07:54:59Z`, cập nhật `2026-10-11T07:56:20Z`, `status: completed`, `conclusion: success`. Đối chiếu **từng bước** — cả ba job success, **không bước nào bị skip**:
+  - `frontend` (9 bước): `npm ci` / `npm test` / `npm run build` đều success.
+  - `backend` (12 bước): `Initialize containers` (service PostgreSQL 16), `Create live transport database`, `alembic upgrade head`, `pytest tests -v` đều success — nghĩa là toàn bộ suite chạy trên **PostgreSQL thật** trong CI, không phải SQLite.
+  - `docker` (6 bước): build `backend/Dockerfile` và `nginx/Dockerfile` đều success.
+  - Run URL: <https://github.com/buinguyenhong/REDCODETHIENHANH/actions/runs/38122984061>
+- **Không đọc được số test cụ thể trong log job backend**: endpoint log của GitHub API trả **403** vì phiên này chưa xác thực GitHub (`gh` chưa đăng nhập). Bước `pytest tests -v` success là bằng chứng đã có; con số test trong CI để trống thay vì suy đoán. Con số **76 passed** là của lần chạy local trên SQLite ở mục trên, không phải số của CI.
+
 ### Giới hạn
 
-- **Chưa chạy lại Docker/e2e trong đợt này.** Các bằng chứng Docker (compose build/up, e2e 23/23, restart 8/8, Content-Type audio) trong runbook mục 13 là của lần chạy trước cùng ngày, đã ghi rõ nguồn. Đợt này chỉ chạy pytest/npm.
-- **Chưa kiểm chứng trên PostgreSQL thật**, chưa nghiệm thu thiết bị thật (PC kiosk, tablet Android, Android TV box).
+- **Chưa chạy lại Docker/e2e trong đợt này.** Các bằng chứng Docker (compose build/up, e2e 23/23, restart 8/8, Content-Type audio) trong runbook mục 13 là của lần chạy trước cùng ngày, đã ghi rõ nguồn. Đợt này chỉ chạy pytest/npm; CI có **build lại cả hai Docker image** (job `docker`) nhưng **không dựng stack và không chạy e2e**.
+- **Chưa kiểm chứng trên PostgreSQL thật của bệnh viện**: suite local của đợt này chạy trên SQLite; CI có chạy toàn bộ suite trên PostgreSQL 16 nhưng đó là service tạm trong CI, không phải instance production thật. Chưa nghiệm thu thiết bị thật (PC kiosk, tablet Android, Android TV box).
 - **`POST /api/system/outbox/requeue-exhausted` chưa được thử với một n8n thật đang sống lại** — mới kiểm bằng test tự động (trạng thái về `PENDING`, `attempt_count` về 0). Việc n8n khử trùng đúng theo `Idempotency-Key` khi phát lại vẫn chưa có bằng chứng.
 - **Hai endpoint health con nay yêu cầu token ADMIN.** Nếu ở đâu đó có probe hạ tầng đang gọi `/api/health/db` hoặc `/api/health/websocket` không kèm token, probe đó sẽ nhận 401 — cần rà lại khi triển khai. Trong repo hiện tại không có probe nào như vậy (đã grep `docker-compose.yml`, `nginx/`, `.github/workflows/ci.yml`), và frontend gọi `getHealthDb`/`getHealthWebsocket` nhưng không component nào dùng.
 - **Chuyển trạng thái dữ liệu cũ `FAILED` → `EXHAUSTED`** chạy trong `process_outbox` mỗi vòng, nên bản ghi cũ chỉ đổi trạng thái khi n8n được bật (worker thoát sớm khi `N8N_ENABLED=false`). Đây là chủ ý — không đụng dữ liệu khi tính năng đang tắt — nhưng nghĩa là một hệ thống đang tắt n8n sẽ vẫn hiện số `exhausted` cũ bằng 0 cho tới khi bật lại.
