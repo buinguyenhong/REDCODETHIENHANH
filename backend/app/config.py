@@ -1,17 +1,6 @@
 from typing import List, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator, model_validator
-import os
-import json
-from pathlib import Path
-
-# Installer-owned persistent configuration takes precedence over deployment env.
-runtime_path = Path(os.getenv('REDCODE_RUNTIME_CONFIG', '/app/config/runtime.json'))
-if runtime_path.is_file():
-    runtime = json.loads(runtime_path.read_text(encoding='utf-8'))
-    for key in ('DATABASE_URL', 'SECRET_KEY', 'INITIAL_ADMIN_PASSWORD'):
-        if key in runtime:
-            os.environ[key] = runtime[key]
 
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
@@ -26,6 +15,7 @@ class Settings(BaseSettings):
     STATION_OFFLINE_THRESHOLD_SECONDS: int = 15
 
     N8N_WEBHOOK_URL: str = "http://localhost:5678/webhook/redcode/alarm"
+    N8N_ENABLED: bool = False
     N8N_TIMEOUT_SECONDS: int = 4
     N8N_MAX_RETRIES: int = 3
 
@@ -39,11 +29,16 @@ class Settings(BaseSettings):
     def production_configuration(self):
         if self.ENVIRONMENT == 'production':
             if self.DEMO_MODE or not self.DATABASE_URL.startswith('postgresql'):
-                raise ValueError('Production requires PostgreSQL and DEMO_MODE=false')
+                raise ValueError(
+                    'Production requires a postgresql+asyncpg:// DATABASE_URL and DEMO_MODE=false. '
+                    'Khai báo DATABASE_URL trong .env trước khi khởi động.'
+                )
             if len(self.SECRET_KEY) < 32 or self.SECRET_KEY.startswith(('redcode-secret', 'change-this')):
                 raise ValueError('Production requires a unique SECRET_KEY of at least 32 characters')
             if '*' in self.ALLOWED_ORIGINS:
                 raise ValueError('Production requires an explicit origin allowlist')
+        if self.N8N_ENABLED and not self.N8N_WEBHOOK_URL.strip():
+            raise ValueError('N8N_ENABLED=true requires N8N_WEBHOOK_URL')
         return self
 
     @field_validator("ALLOWED_ORIGINS")

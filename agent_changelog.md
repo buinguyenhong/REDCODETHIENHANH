@@ -6,6 +6,43 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-11 — Gỡ wizard thiết lập database và trang Admin n8n, cấu hình chỉ bằng `.env`
+
+Yêu cầu: tài liệu định hướng phát triển mới ("CẬP NHẬT ĐỊNH HƯỚNG PHÁT TRIỂN REDCODETHIENHANH") — PostgreSQL là DB bắt buộc, chỉ kết nối qua `DATABASE_URL`, "cấu hình kết nối một lần khi triển khai", "không cần phát triển thêm cơ chế cài đặt hoặc quản lý database phức tạp"; n8n là tích hợp bổ sung cấu hình bằng webhook URL trong `.env`, "không cần trang Admin quản lý kết nối n8n". Hai câu hỏi kiến trúc đã được xác nhận trước khi thực hiện: **gỡ hẳn wizard, chỉ dùng `.env`** và **chuyển n8n sang `.env`, bỏ trang Admin**.
+
+Đây là thay đổi có nguy cơ phá chức năng đang chạy (đọc `runtime.json` bị gỡ → JWT ký bằng `SECRET_KEY` do wizard lưu sẽ mất hiệu lực), nên đã giải thích ngắn và **xin xác nhận trước khi thực hiện** theo mục 7 của định hướng.
+
+### Thay đổi
+
+- **Gỡ wizard thiết lập database**: xóa `backend/app/bootstrap.py`, `backend/app/api/settings.py`, `backend/app/core/integration_settings.py`, endpoint `/api/setup/status` trong `app/main.py`, trang `frontend/src/pages/InitialSetup.jsx` và route `/setup` trong `App.jsx`.
+- **`backend/start_server.py`**: bỏ nhánh `while True` phục vụ trang thiết lập; nay chỉ chạy `alembic upgrade head` rồi `uvicorn` một worker.
+- **`backend/app/config.py`**: gỡ toàn bộ khối override từ `runtime.json` (và các import `os`, `json`, `Path` nay không dùng). Thêm `N8N_ENABLED`; validator bổ sung `N8N_ENABLED=true` bắt buộc có `N8N_WEBHOOK_URL`.
+- **n8n qua biến môi trường**: `alarms.py` chỉ ghi outbox khi `settings.N8N_ENABLED`; `n8n_outbox.py` thoát sớm khi tắt, dùng `N8N_MAX_RETRIES`/`N8N_TIMEOUT_SECONDS`/`N8N_WEBHOOK_URL` từ settings; `health.py` báo `disabled` khi tắt và không bao giờ để trạng thái n8n kéo trạng thái chung xuống.
+- **Gỡ trang Admin n8n**: xóa `frontend/src/pages/IntegrationSettings.jsx`, route `/admin/settings` và link trong `AdminDashboard.jsx`.
+- **`IntegrationSettings`** giữ lại trong `models/__init__.py` kèm docstring: bảng còn trong schema nhưng không đọc/ghi nữa, migration forward-only nên không drop.
+- `docker-compose.yml`: bỏ volume `redcode_config`/`redcode_runtime_config` (không còn runtime config để giữ).
+- `.env.example`, `README.md`, `docs/production_deployment.md`, `docs/production_deployment_flow.md`: cập nhật theo luồng mới.
+- Test: xóa `test_optional_setup.py`, thêm `backend/tests/test_n8n_integration.py` (6 test) và viết lại `conftest.py` để bật n8n bằng cách sửa `settings` thay vì ghi bảng.
+
+### Commands/bằng chứng thực chạy
+
+- Baseline trước thay đổi: `git stash push -u` rồi chạy HEAD → **52 passed** (DB SQLite tạm mới).
+- `python -m pytest tests -q -p no:cacheprovider` trên DB SQLite tạm mới → **55 passed**, 4 warnings, 59.32s.
+- Chạy lại đúng dạng lệnh CI `pytest tests -q` → **55 passed**.
+- `npm test` (frontend) → **8 passed**, 0 fail.
+- `npm run build` → **PASS** (278.62 kB js / 29.11 kB css).
+- `import app.main` → OK; OpenAPI có **34 path**, không còn path `setup`/`settings`/`integration` nào.
+- Kiểm tra validator: production + `DATABASE_URL=""` → `ValidationError: Production requires a postgresql+asyncpg:// DATABASE_URL and DEMO_MODE=false...`; `N8N_ENABLED=true` + `N8N_WEBHOOK_URL=""` → `ValidationError: N8N_ENABLED=true requires N8N_WEBHOOK_URL`.
+- `grep` xác nhận không còn import `integration_settings`/`app.bootstrap`/`api.settings` trong `app/`, `tests/`, `start_server.py`.
+
+### Giới hạn
+
+- **Chưa chạy trên Docker/PostgreSQL thật** — Docker engine vẫn chưa hoạt động ở môi trường này, nên luồng `start_server.py` mới chỉ được xác nhận bằng đọc code và import, chưa bằng một lần `docker compose up` thật.
+- Lỗi `no such column: alarm_types.validity_seconds` khi chạy trên `backend/redcode.db` cũ là **có trước thay đổi này** (đã chứng minh bằng cách stash và chạy HEAD trên cùng DB cũ → lỗi y hệt). Suite cần DB sạch.
+- Bảng `integration_settings` vẫn nằm trong schema; dữ liệu cấu hình n8n cũ trong đó nay không còn được đọc.
+- Định hướng mới yêu cầu **không mở rộng n8n thành hệ thống quản lý tích hợp riêng** — việc gỡ trang Admin là bước đi theo hướng đó; phần kiểm chứng "n8n chết không ảnh hưởng báo động" ở mức thiết bị thật vẫn chưa có.
+- Không thay đổi schema, không migration mới.
+
 ## 2026-10-11 — Merge nhánh sửa lỗi vào `main`, `main` xanh trở lại
 
 Yêu cầu: "merge vào main". `main` trước đó **đang đỏ**: hai lần chạy Actions gần nhất trên `main` (`9b01d4a`, `d214577`) đều `failure`. Đợt này đưa toàn bộ đợt sửa lỗi LAN + hạ tầng test vào `main` và xác nhận `main` xanh trở lại.
@@ -282,14 +319,14 @@ Chi tiết scope và kết quả được giữ dưới đây. Sau đợt này n
 | R06 Audio | PARTIAL | Reject không báo successful start/completion; session guard; remote tone test không ngắt alarm; resume awaited; local test nghe được; unlock retry head. 3 JS tests pass. Chưa có admin test-result ACK/UNKNOWN enum và thiết bị thực. |
 | R07 Kiosk | FIXED ở code/API | POST activate bằng station credential, nhập station code trực tiếp, không bắt user JWT/list station; station 401 không redirect login. API regression pass. **2026-10-09**: credential bị từ chối nay đóng bằng 1008 kèm lý do (trước là HTTP 403 → trình duyệt thấy 1006), client dừng retry và hiển thị lỗi activation; probe uvicorn thật 5/5 PASS. Cần browser boot/refresh. |
 | R08 Reconnect/dismiss | PARTIAL | Auth token là dependency socket, cleanup guards, watchdog; pending dismiss lưu localStorage/retry lúc sync; dismissed/cancel tombstones. **2026-10-09**: client phân biệt được từ chối credential với mất mạng nên hết retry vô hạn; socket bị thay thế đóng bằng 4001 tách khỏi 1008. Cần browser integration, revoke dashboard socket ngay, identity-specific pending action cleanup. |
-| R09 Outbox | PARTIAL | locked_at lease, reclaim abandoned PROCESSING, SQL due filter, exponential capped retry, stable Idempotency-Key, audit failed attempt. Regression reclaim pass. Còn multi-worker locking, admin retry/backlog/config DB. |
+| R09 Outbox | PARTIAL | locked_at lease, reclaim abandoned PROCESSING, SQL due filter, exponential capped retry, stable Idempotency-Key, audit failed attempt. Regression reclaim pass. Còn multi-worker locking, admin retry/backlog. (2026-10-11: cấu hình n8n nay bằng biến môi trường, không còn mục "config DB".) |
 | R10 Permission/idempotency | PARTIAL | API effective types, viewer empty, backend missing permission deny; admin khoa checkboxes; conflict khi key khác actor/payload; frontend giữ request key retry. Còn user-specific permissions, DB key scoped và migration JSON legacy. |
 | R11 Audit/state | PARTIAL | Typed allowlist/target/current socket/active alarm/terminal guard, timestamp ACK, station ID connect logs; configuration action audit không chứa body secrets. Còn before/after transactional config audit, lỗi hệ thống đầy đủ, audio-test ACK. |
 | R12 Groups | PARTIAL | Edit tên omit station_ids thay vì gửi []; sync/dismiss dựa persisted target snapshot. Chưa có membership editor/read API đầy đủ. |
 | R13 History | PARTIAL | DELETE user/department/station/group/alarm type soft-disable; state/history giữ lại; station disable/token update đóng socket. Còn revoke token khi register lại và UI bật/tắt đầy đủ. |
 | R14 Production/security | PARTIAL | Fail-fast production secret/PostgreSQL/demo/CORS; production seed chỉ bootstrap admin; .env example thêm demo/admin; enum/repeat/local audio validation; upload UUID + 20MB + extension; WS Nginx access log off, Uvicorn access log off. Còn content MIME sniffing, toàn bộ FK/null/bounds và log-scan thật. |
 | R15 Health | PARTIAL | DB check lỗi không tiếp tục count trên DB lỗi; còn task readiness/cached integration probe. |
-| R16 Report/UI/deploy | PARTIAL | Ngày Việt Nam→UTC, invalid/reversed range 422, day/month totals, XLSX station detail timestamps/error/formula escaping; multi-line sequence editor không truncate; overlay scroll và bỏ blur; Nginx image build frontend, không mount dist; dockerignore. Còn SQL aggregates, duration/average, n8n admin config, clinical polish, backup restore và PG external network config. |
+| R16 Report/UI/deploy | PARTIAL | Ngày Việt Nam→UTC, invalid/reversed range 422, day/month totals, XLSX station detail timestamps/error/formula escaping; multi-line sequence editor không truncate; overlay scroll và bỏ blur; Nginx image build frontend, không mount dist; dockerignore. Còn SQL aggregates, duration/average, clinical polish, backup restore và PG external network config. (2026-10-11: mục "n8n admin config" không còn — n8n cấu hình bằng `.env`.) |
 
 ## Commands và bằng chứng
 

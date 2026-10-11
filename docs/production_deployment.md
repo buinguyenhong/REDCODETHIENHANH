@@ -4,11 +4,14 @@ Ngày cập nhật: 2026-10-07. Áp dụng cho code từ `9b01d4a`, schema head 
 
 **Bắt đầu tại [Sơ đồ triển khai từng bước](production_deployment_flow.md)** để xem luồng tổng thể, 12 bước triển khai, provisioning trạm và nhánh upgrade/rollback.
 
-## Cập nhật: chế độ cài đặt PostgreSQL sau và n8n Admin
+## Cập nhật: cấu hình chỉ bằng `.env`
 
-Head hiện tại `20261007_integrations`. Nếu `DATABASE_URL=` trong Docker, launcher phục vụ trang thiết lập thay vì main API: lấy mã `docker compose exec backend cat /app/config/setup-token`, nhập PostgreSQL URL và mật khẩu Admin trên browser; wizard kiểm tra, migrate, seed rồi chuyển ứng dụng. Network/user/database vẫn do IT chuẩn bị. Runtime config/secret lưu volume `redcode_runtime_config`, cần backup bảo mật cùng deployment secrets; bootstrap không dùng cho đổi DB hiện có.
+Chế độ cài đặt database trong ứng dụng (wizard) và trang Admin quản lý n8n đã được **gỡ bỏ**. Cấu hình nay chỉ đến từ biến môi trường:
 
-n8n hiện quản lý trong `/admin/settings`, mặc định tắt sau migration kể cả env webhook cũ. Bật/test/lưu trên UI không cần restart. Khi tắt không tạo outbox mới; lần bật đầu không replay backlog trước cutoff. Các hướng dẫn N8N_* env bên dưới là cấu hình legacy, không còn là source runtime. Header/schema tham chiếu release cũ bên dưới chỉ dùng cho quy trình nền, kiểm tra `alembic current` theo release mới.
+- **PostgreSQL**: khai báo `DATABASE_URL` trong `.env` một lần khi triển khai. Container launcher chạy `alembic upgrade head` rồi khởi động API. Thiếu `DATABASE_URL` ở production thì `app/config.py` dừng ngay lúc khởi động với thông báo rõ ràng — không còn trang thiết lập, không còn `setup-token`, không còn volume `redcode_runtime_config` để backup. DB/network/user vẫn do IT chuẩn bị trước.
+- **n8n**: bật/tắt bằng `N8N_ENABLED`, địa chỉ webhook bằng `N8N_WEBHOOK_URL` trong `.env`. Không còn `/admin/settings`; đổi cấu hình n8n cần sửa `.env` và recreate container.
+
+Bảng `integration_settings` vẫn tồn tại trong schema nhưng **không còn được đọc/ghi** (migration forward-only, không drop bảng). Header/schema tham chiếu release cũ bên dưới chỉ dùng cho quy trình nền, kiểm tra `alembic current` theo release mới.
 
 ## 1. Mô hình triển khai
 
@@ -103,6 +106,7 @@ ALLOWED_ORIGINS=https://redcode.<internal-domain>
 ACCESS_TOKEN_EXPIRE_MINUTES=1440
 HEARTBEAT_INTERVAL_SECONDS=5
 STATION_OFFLINE_THRESHOLD_SECONDS=15
+N8N_ENABLED=true
 N8N_WEBHOOK_URL=http://<integration-host>:5678/webhook/redcode/alarm
 N8N_TIMEOUT_SECONDS=4
 N8N_MAX_RETRIES=3
@@ -112,7 +116,7 @@ N8N_MAX_RETRIES=3
 - URL-encode ký tự đặc biệt trong password của database URL.
 - Không dùng secret mẫu; có thể sinh bằng `openssl rand -hex 32` rồi lưu vào `.env`.
 - Fresh production bootstrap chỉ tạo Admin; không có khoa/alarm/audio/trạm demo. `INITIAL_ADMIN_PASSWORD` cần cho lần khởi tạo đầu; sau bootstrap có thể bỏ giá trị và recreate backend. Biến này không đổi mật khẩu tài khoản đã tồn tại.
-- n8n không dùng thì để `N8N_WEBHOOK_URL=`; outbox chưa gửi được giữ trong DB. Khi bật lại, theo dõi backlog.
+- n8n không dùng thì để `N8N_ENABLED=false` (và có thể để trống `N8N_WEBHOOK_URL`); hệ thống báo động nội bộ chạy bình thường và không tạo bản ghi outbox nào. `N8N_ENABLED=true` mà thiếu `N8N_WEBHOOK_URL` là lỗi cấu hình và bị chặn lúc khởi động.
 - Compose hiện ép ENVIRONMENT=production. Thay `.env` cần recreate container, không chỉ restart.
 - Giữ `.env` ngoài Git; không chia sẻ output `docker compose config` đã interpolate secret hoặc URL WebSocket có token.
 

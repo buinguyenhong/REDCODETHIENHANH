@@ -16,7 +16,7 @@ from app.models import (
 )
 from app.schemas import AlarmCreate, AlarmOut, AlarmEventOut
 from app.core.websocket_manager import manager
-from app.core.integration_settings import get_integration
+from app.config import settings
 from app.api.deps import get_current_user, get_current_operator_or_admin
 
 router = APIRouter(prefix="/alarms", tags=["Alarms"])
@@ -281,8 +281,10 @@ async def create_alarm(
         status=OutboxStatus.PENDING.value,
         created_at=now
     )
-    integration = await get_integration(db)
-    if integration and integration.enabled:
+    # n8n là tích hợp bổ sung: chỉ ghi outbox khi được bật bằng biến môi trường.
+    # Tắt n8n thì không có bản ghi nào để phát lại, và luồng báo động nội bộ
+    # không phụ thuộc vào việc gửi này.
+    if settings.N8N_ENABLED:
         db.add(outbox_item)
     await db.commit()
 

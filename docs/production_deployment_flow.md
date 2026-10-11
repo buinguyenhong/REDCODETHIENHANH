@@ -2,7 +2,7 @@
 
 Tài liệu dành cho người trực tiếp triển khai tại bệnh viện. Tham chiếu code `9b01d4a`, migration head `20261007_permissions`.
 
-**Luồng đơn giản mới:** có thể để DATABASE_URL trống → cài backend/Nginx → mở wizard → IT nhập PostgreSQL và mã setup → migrate/tạo Admin → cấu hình nghiệp vụ. n8n bỏ qua và bật sau tại `/admin/settings`; head mới `20261007_integrations`. Chi tiết tại đầu [runbook](production_deployment.md). External DB network/user vẫn chuẩn bị bởi IT.
+**Cấu hình chỉ bằng `.env`:** IT chuẩn bị PostgreSQL/network/user trước, rồi khai báo `DATABASE_URL` (và `N8N_ENABLED`/`N8N_WEBHOOK_URL` nếu dùng n8n) trong `.env`. Container launcher chạy `alembic upgrade head` rồi khởi động API; thiếu `DATABASE_URL` ở production thì dừng ngay lúc khởi động. Không còn wizard thiết lập database và không còn trang `/admin/settings` cho n8n. Chi tiết tại đầu [runbook](production_deployment.md).
 
 - **Đọc sơ đồ và làm theo thứ tự trong tài liệu này.**
 - Lệnh backup/restore và cấu hình đầy đủ: [Runbook production](production_deployment.md).

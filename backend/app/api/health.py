@@ -7,7 +7,6 @@ from app.config import settings
 from app.models import Station, StationStatus
 from app.core.websocket_manager import manager
 from app.schemas import HealthResponse
-from app.core.integration_settings import get_integration
 
 router = APIRouter(prefix="/health", tags=["Health Check"])
 
@@ -22,11 +21,13 @@ async def get_health(db: AsyncSession = Depends(get_db)):
     ws_status = "ok"
 
     n8n_status = "disabled"
-    integration = await get_integration(db) if db_status == 'ok' else None
-    if integration and integration.enabled:
+    # n8n là tích hợp bổ sung, cấu hình bằng biến môi trường. Trạng thái của nó
+    # không bao giờ được kéo trạng thái chung của hệ thống xuống: báo động nội bộ
+    # vẫn phải chạy bình thường khi n8n chết.
+    if settings.N8N_ENABLED:
         try:
             async with httpx.AsyncClient(timeout=1.5) as client:
-                res = await client.get(integration.webhook_url.split("/webhook")[0] + "/healthz")
+                res = await client.get(settings.N8N_WEBHOOK_URL.split("/webhook")[0] + "/healthz")
                 n8n_status = "ok" if res.is_success else "degraded"
         except Exception:
             n8n_status = "degraded"

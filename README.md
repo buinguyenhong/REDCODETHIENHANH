@@ -14,17 +14,19 @@ Hệ thống cảnh báo trên mạng LAN: **FastAPI + React/Vite + Nginx + Post
 
 ## Luồng vận hành
 
-### Cài ứng dụng trước, kết nối PostgreSQL sau
+### Cấu hình PostgreSQL bằng `DATABASE_URL`
 
-Docker hỗ trợ `DATABASE_URL=`: launcher mở giao diện thiết lập độc lập DB. Production vẫn cần `DEMO_MODE=false`, SECRET_KEY riêng và origin allowlist trong deployment env. Mở địa chỉ Redcode, IT lấy mã qua `docker compose exec backend cat /app/config/setup-token`, nhập PostgreSQL URL và mật khẩu Admin ≥12 ký tự. Kiểm tra → migrate → tạo Admin → ứng dụng tự chuyển sang chế độ chính. Runtime config được lưu mode 0600 trong volume `redcode_runtime_config`; backup bảo mật volume này. Không có PostgreSQL thì chưa vận hành alarm.
+PostgreSQL là bắt buộc ở production và do IT dựng sẵn trên container riêng. REDCODE chỉ kết nối tới đó: khai báo `DATABASE_URL` trong `.env` **một lần khi triển khai**, launcher chạy `alembic upgrade head` rồi khởi động API. Không có cơ chế thiết lập database trong ứng dụng — thiếu `DATABASE_URL` ở production thì `app/config.py` dừng ngay lúc khởi động với thông báo rõ ràng, thay vì mở một giao diện cài đặt.
 
-DB/network/user phải được IT chuẩn bị trước; wizard không tự cài PostgreSQL hoặc gắn external Docker network. Cấu hình DB đã có qua env vẫn dùng startup Alembic như trước. Bootstrap đóng sau hoàn tất, không phải công cụ đổi DB đang vận hành.
+DB/network/user do IT chuẩn bị trước. Alembic quản lý schema, migration forward-only.
 
-### Kết nối n8n sau
+### Cấu hình n8n bằng biến môi trường
 
-Admin → **CÀI ĐẶT TÍCH HỢP n8n** (`/admin/settings`) nhập webhook/timeout/retries, test rồi bật/lưu; không cần recreate backend. Khi tắt không tạo outbox cho alarm mới. Lần bật đầu không gửi backlog cũ trước `enabled_since`. Tắt tạm dừng worker; các job đủ điều kiện từ thời điểm đã bật lần đầu vẫn retry khi bật lại. Event test là `REDCODE_CONNECTION_TEST`, workflow cần phân biệt với alarm thật.
+n8n là **tích hợp bổ sung**, không thuộc đường báo động cốt lõi. Bật/tắt bằng `N8N_ENABLED` trong `.env`; cấu hình một lần khi triển khai, không có trang Admin quản lý kết nối. `N8N_ENABLED=true` mà thiếu `N8N_WEBHOOK_URL` là lỗi cấu hình và bị chặn lúc khởi động.
 
-Migration mới `20261007_integrations` mặc định **tắt** n8n kể cả deployment có env webhook cũ. Sau upgrade, Admin cần cấu hình/bật lại; env N8N_* không còn source cấu hình runtime. Webhook lưu trong DB, chỉ Admin đọc/chỉnh; không chứa user/password trong URL và không ghi URL vào audit.
+Khi tắt: hệ thống báo động nội bộ chạy bình thường và **không** tạo bản ghi chờ gửi nào, nên không có tồn đọng để phát lại về sau. Khi bật: mỗi báo động mới phát sinh đúng một bản ghi outbox; worker nền gửi kèm `Idempotency-Key` ổn định để workflow dedup, có retry/backoff và lease recovery. n8n chết không ảnh hưởng việc tạo, truyền hay phát báo động.
+
+Chỉ gửi khi **phát sinh báo động** (loại, vị trí, ghi chú). Không gửi thông báo kết thúc báo động hay mất kết nối thiết bị qua n8n.
 
 1. **ADMIN** cấu hình khoa, quyền phát alarm, loại alarm, audio và nhóm nhận; quản trị báo cáo/XLSX.
 2. Trên máy nhận, Admin đăng nhập, chọn trạm và **xác nhận thiết bị**. Hệ thống tự cấp/lưu credential nội bộ, không cần nhập hoặc copy token. Rotate credential thu hồi kết nối cũ.
@@ -59,8 +61,9 @@ INITIAL_ADMIN_PASSWORD=<mat-khau-admin-rieng>
 DATABASE_URL=postgresql+asyncpg://<user>:<password>@<postgres-host>:5432/<database>
 SECRET_KEY=<secret-ngau-nhien-rieng-toi-thieu-32-ky-tu>
 ALLOWED_ORIGINS=http://192.168.1.100
+N8N_ENABLED=true
 N8N_WEBHOOK_URL=http://<n8n-host>:5678/webhook/redcode/alarm
-N8N_TIMEOUT_SECONDS=5
+N8N_TIMEOUT_SECONDS=4
 N8N_MAX_RETRIES=3
 ```
 
