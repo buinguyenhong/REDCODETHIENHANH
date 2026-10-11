@@ -449,9 +449,10 @@
     <h1>Điều kiện lên Production REDCODE</h1>
     <p class="standfirst">
       Tổng hợp những việc còn lại trước khi hệ thống được dùng thật trong bệnh viện, xếp theo
-      thứ tự cổng phải vượt qua. Trạng thái tính đến 2026-10-09, tổng hợp từ
-      <code>project.md</code> mục 40–48, <code>agent_changelog.md</code> và kiểm tra trực tiếp
-      trên máy hiện tại.
+      thứ tự cổng phải vượt qua. Trạng thái tính đến 2026-10-11 (các mục ghi rõ ngày cập nhật riêng),
+      tổng hợp từ <code>project.md</code> mục 40–48, <code>agent_changelog.md</code> và kiểm tra
+      trực tiếp trên máy hiện tại. Bằng chứng chạy thật và danh sách giới hạn:
+      <a href="production_deployment.md">runbook triển khai, mục 13</a>.
     </p>
 
     <div class="verdict">
@@ -502,17 +503,28 @@
             <strong>Cập nhật 2026-10-09:</strong> Docker engine <em>đã hoạt động</em> — Server Docker
             Desktop 4.50.0, Engine 28.5.1, <code>docker info</code> thành công, Compose
             v2.40.3-desktop.1. Blocker cứng trước đây (<code>dockerDesktopLinuxEngine</code> không
-            tồn tại) nay đã hết. Việc còn lại là <em>dựng stack</em>: image backend và Nginx chưa
-            từng được build, <code>docker compose up</code> chưa từng chạy.
+            tồn tại) nay đã hết.
           </p>
           <p>
-            Lưu ý khi dựng: <code>docker-compose.yml</code> ép <code>ENVIRONMENT=production</code>,
-            còn <code>.env</code> hiện tại vẫn là cấu hình dev (<code>DATABASE_URL</code> SQLite,
-            <code>ALLOWED_ORIGINS=*</code>) → <code>app/config.py</code> sẽ chặn ngay lúc khởi động.
-            Đó là thiết kế đúng, không phải lỗi.
+            <strong>Cập nhật 2026-10-11:</strong> stack <em>đã được build và chạy thật</em> —
+            <code>docker compose build</code> exit 0 cho cả <code>redcode-backend</code> và
+            <code>redcode-nginx</code>; <code>up -d</code> đưa cả hai container lên; toàn bộ chuỗi
+            Alembic chạy trên DB trắng (<code>8280022f67e9 → 20261007_integrations</code>), seed và
+            outbox worker khởi động; <code>/api/health</code> qua Nginx trả
+            <code>{"status":"ok","database":"ok","websocket":"ok"}</code>; hai khói kiểm thử
+            end-to-end đạt 23/23 và 8/8. Stack đó chạy bằng <em>override tạm</em>
+            (<code>ENVIRONMENT=development</code>, SQLite trong volume tạm) và đã được gỡ sạch
+            (<code>docker compose down -v</code>), nên <strong>vẫn chưa phải stack production</strong>.
+          </p>
+          <p>
+            Việc còn lại đúng như thiết kế: <code>docker-compose.yml</code> ép
+            <code>ENVIRONMENT=production</code>, còn <code>.env</code> hiện tại vẫn là cấu hình dev
+            (<code>DATABASE_URL</code> SQLite, <code>ALLOWED_ORIGINS=*</code>) →
+            <code>app/config.py</code> sẽ chặn ngay lúc khởi động. Đó là thiết kế đúng, không phải lỗi.
+            Chưa lần nào chạy stack với <code>.env</code> production và PostgreSQL thật.
           </p>
         </div>
-        <p class="action"><b>Việc cần</b>Chuẩn bị <code>.env</code> production hợp lệ, rồi chạy <code>docker compose config --quiet</code> → <code>build</code> → <code>up -d</code> → <code>ps</code> → <code>nginx -t</code> → <code>curl /api/health</code>.</p>
+        <p class="action"><b>Việc cần</b>Chuẩn bị <code>.env</code> production hợp lệ trỏ PostgreSQL thật, rồi chạy <code>docker compose config --quiet</code> → <code>build</code> → <code>up -d</code> → <code>ps</code> → <code>nginx -t</code> → <code>curl /api/health</code> → <code>curl -sI /assets/audio/&lt;tep&gt;.wav</code>.</p>
       </li>
 
       <li class="is-todo">

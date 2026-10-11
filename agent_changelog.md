@@ -6,6 +6,60 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-11 — Tạo lại tài liệu triển khai theo hệ thống hiện tại
+
+Yêu cầu: "tạo lại tài liệu deploy sau đó push code lại".
+
+Đợt này **chỉ sửa tài liệu**, không đổi code, không đổi schema, không migration. Lý do phải tạo lại: tài liệu triển khai vẫn tham chiếu release `9b01d4a` và schema head `20261007_permissions` (head thật là `20261007_integrations`), và chưa phản ánh loạt sửa P0 vừa nghiệm thu — nghĩa là một người triển khai đọc tài liệu cũ sẽ không biết rằng trạng thái trạm nay chỉ ONLINE khi có WebSocket thật, rằng sau restart mọi trạm hiện OFFLINE, rằng phản hồi phát báo động có hai con số đếm trạm, hay rằng asset audio phải trả đúng `Content-Type`.
+
+### Thay đổi
+
+- **`docs/production_deployment.md`** — viết lại:
+  - Header cập nhật: code `84ad2d6`, schema head `20261007_integrations`.
+  - Mục 0 mới "Đọc trước: những gì khác so với bản runbook cũ" — bốn thay đổi hành vi mà người vận hành bắt buộc phải biết: cấu hình chỉ bằng `.env`; trạng thái trạm chỉ ONLINE khi có kênh WebSocket thật và cờ cũ bị xóa sau restart; phát báo động trả `target_station_count`/`delivered_station_count` và phát lại báo động đã kết thúc bị từ chối **409**; mã đóng WebSocket `4001`/`1008`/`1011` có nghĩa cụ thể (kèm cảnh báo không xóa profile browser để "thử lại").
+  - Mục 4 bổ sung **bảng ràng buộc cấu hình** mà `app/config.py` chặn lúc khởi động, kèm thông báo lỗi thật; ghi rõ thiếu `INITIAL_ADMIN_PASSWORD` trên DB trắng làm tiến trình seed dừng **có chủ ý**.
+  - Mục 5 nêu kết quả mong đợi cụ thể (`alembic current` = `20261007_integrations`, log `Station offline monitor active`, `Durable notification outbox worker active`) và thêm bước **bắt buộc** kiểm tra `Content-Type` của asset audio — sai kiểu media nghĩa là loa không kêu dù UI hiện báo động.
+  - Mục 6 nêu yêu cầu alarm type phải có ≥1 tệp âm thanh (rỗng → 422) và hành vi khi sửa cấu hình trạm đang trực (đổi tên không ngắt; đổi token/mã trạm thì ngắt và phải xác nhận lại).
+  - Mục 7 thêm việc đối chiếu `target_station_count` với `delivered_station_count` sau mỗi lần phát.
+  - Mục 10 (upgrade) cảnh báo sau `up -d` mọi trạm hiện OFFLINE là hành vi đúng, cửa sổ bảo trì cần người xác nhận từng máy.
+  - Mục 11 thêm 5 dòng chẩn đoán mới: health `websocket: degraded`, trạm ONLINE mà không có alarm, phiên bị chiếm (`4001`), dừng thử lại vĩnh viễn (`1008`), `delivered < target`, không tạo được alarm type.
+  - Mục 13 mới: **bảng bằng chứng đã chạy thật** (69 backend / 19 frontend / build / compose build+up / chuỗi Alembic / health / e2e 23/23 / restart 8/8 / Content-Type / CI run `38114856575`) và **danh sách giới hạn chưa có bằng chứng** (thiết bị thật, PostgreSQL thật, diễn tập backup/restore, n8n chết ở mức thiết bị).
+- **`docs/production_deployment_flow.md`** — viết lại: tham chiếu release/head mới; mục 0 mới "Ba điều phải biết trước khi bắt đầu"; sơ đồ tổng thể thêm nhánh kiểm tra MIME audio ở bước 8; bước 5 nêu rõ cấu hình sai bị chặn lúc khởi động là kết quả đúng; bước 8 liệt kê 5 điều kiện qua bước; bước 9 thêm ràng buộc alarm type có âm thanh; bước 10 thêm hành vi khi sửa cấu hình trạm đang trực; bước 11 thêm ba điểm kiểm tra riêng của release (số trạm nhận, phát lại đã kết thúc → 409, cờ cũ bị xóa sau restart); luồng upgrade thêm nhánh xác nhận lại từng máy trạm; bảng xử lý lỗi thêm 3 dòng; checklist một trang bổ sung các mục tương ứng.
+- **`docs/testing_guide.md`** — cập nhật release tham chiếu `84ad2d6` / head `20261007_integrations`; dòng "kết quả gần nhất" thay số liệu cũ (49 backend, 8 JS, và chỉ số load test 100 socket chưa có bằng chứng trong đợt này) bằng số liệu chạy thật của đợt P0 (69 backend, 19 JS, build PASS, e2e 23/23, restart 8/8) kèm liên kết tới mục 13 của runbook; T02 thêm bước đối chiếu hai con số đếm trạm; T04 thêm yêu cầu phát lại báo động đã kết thúc phải bị từ chối 409; T06 thêm case nhịp tim HTTP không có WebSocket; T09 thêm yêu cầu cờ cũ phải bị xóa sau restart và kiểm tra `Content-Type` của asset audio.
+- **`docs/production-readiness.html`** — mục "Stack production chưa từng được dựng": thêm cập nhật 2026-10-11 rằng stack **đã được build và chạy thật** (compose build exit 0, hai container Up, chuỗi Alembic trên DB trắng, health ok, e2e 23/23 + restart 8/8) nhưng bằng override tạm SQLite đã gỡ sạch, nên **vẫn chưa phải stack production**; giữ nguyên trạng thái "Còn thiếu" vì chưa lần nào chạy với `.env` production và PostgreSQL thật. Standfirst cập nhật ngày và thêm liên kết tới bằng chứng.
+
+### Test bổ sung
+
+Không thêm test mới (đợt này chỉ sửa tài liệu). Các con số ghi trong tài liệu đã được **chạy lại thật** trước khi ghi, để không lặp lại lỗi ghi số liệu cũ:
+
+- `pytest tests --collect-only -q` → **69 tests collected** (khớp con số ghi trong tài liệu).
+- `pytest tests -q -p no:cacheprovider` trên DB SQLite tạm mới → **69 passed**, 4 warnings, 64.97s.
+- `npm test` (frontend) → **19 passed, 0 fail**.
+
+### Commands/bằng chứng thực chạy
+
+```bash
+# Backend, trên DB SQLite tạm mới (không dùng backend/redcode.db)
+cd backend
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_docverify.db" ENVIRONMENT=test DEMO_MODE=true \
+  ../venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+# → 69 passed, 4 warnings in 64.97s
+
+# Frontend
+cd frontend && npm test
+# → tests 19 / pass 19 / fail 0
+```
+
+Kiểm tra chéo tài liệu với code (không dựa vào trí nhớ): chuỗi migration đọc từ `revision`/`down_revision` trong `backend/alembic/versions/` → `8280022f67e9 → 20261006_runtime → 20261006_validity → 20261007_permissions → 20261007_integrations`; ràng buộc production đọc từ `backend/app/config.py`; danh sách biến đọc từ `.env.example`; MIME audio đọc từ `nginx/default.conf`; mã đóng WebSocket đọc từ `backend/app/core/websocket_manager.py`.
+
+Dọn dẹp: xóa các DB tạm `rc_*.db` trong `$TEMP` do các đợt trước để lại. `backend/redcode.db` của dự án không bị chạm tới. Không tạo container nào trong đợt này.
+
+### Giới hạn
+
+- Đợt này **không chạy lại** Docker/stack; các bằng chứng Docker và e2e trong tài liệu là của đợt P0 trước (commit `a8c74e2`), đã ghi rõ nguồn trong mục 13 của runbook.
+- Các giới hạn của đợt P0 vẫn nguyên: chưa nghiệm thu thiết bị thật (PC kiosk, tablet Android, Android TV box), chưa chạy trên PostgreSQL thật, chưa diễn tập `pg_dump`/`pg_restore`, chưa kiểm chứng "n8n chết" ở mức thiết bị.
+- `docs/production-readiness.html` vẫn giữ verdict "Chưa đủ điều kiện": hai chặn cứng (chưa chứng minh backup/restore; chưa chạy stack production với PostgreSQL thật) **chưa được gỡ** trong đợt này.
+
 ## 2026-10-11 — Sửa loạt lỗi P0 về kết nối, phục hồi và tính trung thực của trạng thái; nghiệm thu trên Docker
 
 Yêu cầu: "đã chạy docker engine. hãy thực thi" — Docker engine đã hoạt động nên thực thi loạt sửa P0 đã rà soát và dùng Docker cho phần kiểm chứng trước đây bị chặn. Theo định hướng: "Tiếp tục bổ sung và chạy các bài kiểm thử liên quan đến những phần code đang chỉnh sửa. Không tuyên bố đã kiểm chứng thiết bị thực tế nếu mới chỉ chạy automated tests."

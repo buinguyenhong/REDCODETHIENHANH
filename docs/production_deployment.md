@@ -1,17 +1,19 @@
-# REDCODE — Runbook triển khai production thực tế
+# REDCODE — Runbook triển khai production
 
-Ngày cập nhật: 2026-10-07. Áp dụng cho code từ `9b01d4a`, schema head `20261007_permissions`. Đặc tả: [project.md](../project.md). Nghiệm thu: [testing_guide.md](testing_guide.md).
+Ngày cập nhật: 2026-10-11. Áp dụng cho code từ `84ad2d6`, schema head `20261007_integrations`. Đặc tả: [project.md](../project.md). Nghiệm thu: [testing_guide.md](testing_guide.md). Luồng từng bước: [Sơ đồ triển khai](production_deployment_flow.md).
 
-**Bắt đầu tại [Sơ đồ triển khai từng bước](production_deployment_flow.md)** để xem luồng tổng thể, 12 bước triển khai, provisioning trạm và nhánh upgrade/rollback.
+## 0. Đọc trước: những gì khác so với bản runbook cũ
 
-## Cập nhật: cấu hình chỉ bằng `.env`
+Nếu bạn từng triển khai REDCODE theo tài liệu trước đây, bốn thay đổi dưới đây ảnh hưởng trực tiếp tới thao tác vận hành:
 
-Chế độ cài đặt database trong ứng dụng (wizard) và trang Admin quản lý n8n đã được **gỡ bỏ**. Cấu hình nay chỉ đến từ biến môi trường:
+1. **Cấu hình chỉ bằng `.env`.** Chế độ cài đặt database trong ứng dụng (wizard) và trang Admin quản lý n8n đã bị gỡ. Không còn `/setup`, không còn `setup-token`, không còn `/admin/settings`, không còn volume `redcode_runtime_config` để backup. PostgreSQL phải do IT dựng sẵn; REDCODE chỉ kết nối.
+2. **Trạng thái trạm nay trung thực hơn, nên có thể *khác* những gì bạn quen thấy.** Một trạm chỉ được đánh `ONLINE`/`AUDIO READY` khi nó **thật sự có kênh WebSocket**. Nhịp tim HTTP không có socket không còn ghi `audio_ready`/`client_ready` (trước đây dashboard hiện "AUDIO READY" cho thiết bị không hú được). Khởi động lại máy chủ **xóa** toàn bộ cờ cũ: sau restart mọi trạm hiện `OFFLINE` cho tới khi kết nối lại. Trạm nào vẫn hiện ONLINE mà không có socket là lỗi, không phải bình thường.
+3. **Báo cáo phát báo động nói rõ số trạm thật sự nhận.** Phản hồi tạo báo động có `target_station_count` (số trạm đích) và `delivered_station_count` (số trạm đã gửi thành công). Người trực phải đọc cả hai. Phát lại một báo động **đã kết thúc** (CANCELLED/EXPIRED) trả **409** thay vì trả lại bản ghi cũ với 201 — trước đây thao tác này khiến người trực tưởng vừa phát được báo động trong khi không còi nào hú.
+4. **Mã đóng WebSocket có nghĩa cụ thể.** `4001` = phiên trạm bị thiết bị khác chiếm chỗ (client chờ 15 giây rồi mới thử lại); `1008` = credential bị từ chối (client **dừng thử lại vĩnh viễn**, phải xác nhận lại thiết bị); `1011` = hết nhịp tim. Đừng xóa `localStorage`/profile browser của máy trạm để "thử lại" — làm vậy mất credential và phải provisioning lại.
 
-- **PostgreSQL**: khai báo `DATABASE_URL` trong `.env` một lần khi triển khai. Container launcher chạy `alembic upgrade head` rồi khởi động API. Thiếu `DATABASE_URL` ở production thì `app/config.py` dừng ngay lúc khởi động với thông báo rõ ràng — không còn trang thiết lập, không còn `setup-token`, không còn volume `redcode_runtime_config` để backup. DB/network/user vẫn do IT chuẩn bị trước.
-- **n8n**: bật/tắt bằng `N8N_ENABLED`, địa chỉ webhook bằng `N8N_WEBHOOK_URL` trong `.env`. Không còn `/admin/settings`; đổi cấu hình n8n cần sửa `.env` và recreate container.
+Hai điểm hạ tầng đi kèm: `/api/health` trả `websocket: "degraded"` khi vòng giám sát nhịp tim chết (trạm rút điện sẽ hiện ONLINE mãi mãi), và `nginx/default.conf` nay khai báo tường minh kiểu media cho `/assets/audio/` — trước đây tệp `.wav` được trả về dạng `application/octet-stream` và trình duyệt có quyền từ chối phát.
 
-Bảng `integration_settings` vẫn tồn tại trong schema nhưng **không còn được đọc/ghi** (migration forward-only, không drop bảng). Header/schema tham chiếu release cũ bên dưới chỉ dùng cho quy trình nền, kiểm tra `alembic current` theo release mới.
+Bảng `integration_settings` vẫn nằm trong schema (migration forward-only, không drop) nhưng **không còn được đọc/ghi**; cấu hình n8n nay chỉ đến từ `.env`.
 
 ## 1. Mô hình triển khai
 
@@ -23,7 +25,7 @@ PC/Android trên LAN → Nginx :80 (hoặc reverse proxy HTTPS nội bộ)
                                            └─ n8n webhook (không chặn alarm)
 ```
 
-Compose hiện có chỉ tạo backend và nginx; không tạo PostgreSQL production. Backend chạy **1 Uvicorn worker**, vì WebSocket manager in-memory. PostgreSQL và audio phải persistent. Không tăng replicas/workers trước khi có thiết kế chia sẻ connection/routing được nghiệm thu.
+Compose trong repo chỉ tạo **backend** và **nginx**; không tạo PostgreSQL production. Backend chạy **1 Uvicorn worker** (`--workers 1`) vì WebSocket manager là in-memory — tăng worker/replica sẽ làm trạm kết nối vào worker này mà không nhận được báo động phát từ worker khác. PostgreSQL và audio phải persistent. Không tăng replicas/workers trước khi có thiết kế chia sẻ connection/routing được nghiệm thu.
 
 ## 2. Chuẩn bị môi trường
 
@@ -61,7 +63,7 @@ CREATE ROLE redcode_app LOGIN PASSWORD '<mat-khau-rieng>';
 CREATE DATABASE redcode OWNER redcode_app;
 ```
 
-Không chạy CREATE DATABASE khi nâng cấp DB đã có. User migration cần quyền tạo/alter bảng/index/sequence trong schema ứng dụng. Kiểm tra quyền schema theo chính sách PostgreSQL của đơn vị.
+Không chạy `CREATE DATABASE` khi nâng cấp DB đã có. User migration cần quyền tạo/alter bảng/index/sequence trong schema ứng dụng. Kiểm tra quyền schema theo chính sách PostgreSQL của đơn vị.
 
 ### 3.2 External Docker network
 
@@ -87,22 +89,22 @@ networks:
 docker network inspect <network-thuc-te-cua-postgresql>
 ```
 
-## 4. Cấu hình production
+## 4. Cấu hình production bằng `.env`
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-Chỉnh `.env` bằng trình soạn thảo trên server:
+`.env.example` là danh sách biến đầy đủ. Giá trị production tối thiểu:
 
 ```dotenv
 ENVIRONMENT=production
 DEMO_MODE=false
+INITIAL_ADMIN_PASSWORD=<mat-khau-khoi-tao-admin-rieng>
 DATABASE_URL=postgresql+asyncpg://redcode_app:<url-encoded-password>@<postgres-alias>:5432/redcode
 SECRET_KEY=<secret-ngau-nhien-rieng-it-nhat-32-ky-tu>
-INITIAL_ADMIN_PASSWORD=<mat-khau-khoi-tao-admin-rieng>
-ALLOWED_ORIGINS=https://redcode.<internal-domain>
+ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=1440
 HEARTBEAT_INTERVAL_SECONDS=5
 STATION_OFFLINE_THRESHOLD_SECONDS=15
@@ -110,19 +112,34 @@ N8N_ENABLED=true
 N8N_WEBHOOK_URL=http://<integration-host>:5678/webhook/redcode/alarm
 N8N_TIMEOUT_SECONDS=4
 N8N_MAX_RETRIES=3
+ALLOWED_ORIGINS=https://redcode.<internal-domain>
+PORT=8000
+HOST=0.0.0.0
 ```
 
-- Origin phải trùng scheme/host/port người dùng truy cập; không wildcard. HTTP LAN dùng origin `http://<ip-hoac-dns>` tương ứng.
+Ràng buộc mà `app/config.py` **chặn ngay lúc khởi động** khi `ENVIRONMENT=production` (không có cách vượt qua từ UI):
+
+| Ràng buộc | Thông báo khi vi phạm |
+|---|---|
+| `DATABASE_URL` phải là `postgresql+asyncpg://` | Production requires a postgresql+asyncpg:// DATABASE_URL |
+| `DEMO_MODE` phải là `false` | (cùng thông báo trên) |
+| `SECRET_KEY` ≥ 32 ký tự, không bắt đầu bằng `redcode-secret`/`change-this` | Production requires a unique SECRET_KEY of at least 32 characters |
+| `ALLOWED_ORIGINS` không được chứa `*` | Production requires an explicit origin allowlist |
+| `N8N_ENABLED=true` thì `N8N_WEBHOOK_URL` không được rỗng | N8N_ENABLED=true requires N8N_WEBHOOK_URL |
+
+Ghi chú vận hành:
+
+- Origin phải trùng scheme/host/port người dùng truy cập. HTTP LAN dùng origin `http://<ip-hoac-dns>` tương ứng.
 - URL-encode ký tự đặc biệt trong password của database URL.
-- Không dùng secret mẫu; có thể sinh bằng `openssl rand -hex 32` rồi lưu vào `.env`.
-- Fresh production bootstrap chỉ tạo Admin; không có khoa/alarm/audio/trạm demo. `INITIAL_ADMIN_PASSWORD` cần cho lần khởi tạo đầu; sau bootstrap có thể bỏ giá trị và recreate backend. Biến này không đổi mật khẩu tài khoản đã tồn tại.
-- n8n không dùng thì để `N8N_ENABLED=false` (và có thể để trống `N8N_WEBHOOK_URL`); hệ thống báo động nội bộ chạy bình thường và không tạo bản ghi outbox nào. `N8N_ENABLED=true` mà thiếu `N8N_WEBHOOK_URL` là lỗi cấu hình và bị chặn lúc khởi động.
-- Compose hiện ép ENVIRONMENT=production. Thay `.env` cần recreate container, không chỉ restart.
+- Không dùng secret mẫu; sinh bằng `openssl rand -hex 32` rồi lưu vào `.env`.
+- **Fresh production bootstrap chỉ tạo tài khoản Admin**, không có khoa/alarm/audio/trạm demo. Thiếu `INITIAL_ADMIN_PASSWORD` trên DB trắng thì tiến trình seed **dừng với lỗi** — đây là chủ ý, không phải sự cố. Biến này không đổi mật khẩu của tài khoản admin đã tồn tại; sau bootstrap có thể bỏ giá trị và recreate backend.
+- n8n không dùng thì để `N8N_ENABLED=false`; hệ thống báo động nội bộ chạy bình thường và không tạo bản ghi outbox nào.
+- Compose **ép** `ENVIRONMENT=production` và đọc `DATABASE_URL`/`SECRET_KEY` từ chính `.env` của thư mục dự án. Sửa `.env` cần **recreate** container (`up -d`), restart đơn thuần không nạp env mới.
 - Giữ `.env` ngoài Git; không chia sẻ output `docker compose config` đã interpolate secret hoặc URL WebSocket có token.
 
 ### HTTPS nội bộ
 
-Nginx repository hiện **listen HTTP 80**, chưa có TLS certificate/config. Nếu bệnh viện dùng HTTPS, TLS terminate tại reverse proxy nội bộ hiện có hoặc cấu hình Nginx/certificate trong deployment. Forward `/api`, `/assets/audio` và `/ws` cùng origin; proxy phải hỗ trợ Upgrade/WebSocket, timeout dài. Browser chọn `wss` theo scheme trang. Tắt/redact query credentials trong access logs tại **mọi** proxy; Nginx `/ws` và Uvicorn trong repo đã tắt access logs.
+Nginx trong repo **listen HTTP 80**, chưa có TLS certificate/config. Nếu bệnh viện dùng HTTPS, TLS terminate tại reverse proxy nội bộ hiện có hoặc cấu hình Nginx/certificate trong deployment. Forward `/api`, `/assets/audio` và `/ws` cùng origin; proxy phải hỗ trợ Upgrade/WebSocket, timeout dài. Browser chọn `wss` theo scheme trang. Tắt/redact query credentials trong access logs tại **mọi** proxy; Nginx `/ws` và Uvicorn trong repo đã tắt access logs.
 
 ## 5. Build, migration và startup
 
@@ -139,18 +156,32 @@ curl --fail --silent --show-error http://127.0.0.1/api/health
 docker compose logs --tail=100 backend nginx
 ```
 
-Head dự kiến `20261007_permissions` cho release này. Image backend cũng tự chạy `alembic upgrade head` trước Uvicorn; chạy migration thủ công ở trên giúp phát hiện lỗi trước mở API. Production không dùng `Base.metadata.create_all()` thay Alembic. Nginx build frontend trong image, không phụ thuộc dist có sẵn.
+Kết quả mong đợi:
+
+- `alembic current` → **`20261007_integrations (head)`** cho release này. Chuỗi đầy đủ khi migrate DB trắng: `8280022f67e9 → 20261006_runtime → 20261006_validity → 20261007_permissions → 20261007_integrations`.
+- `/api/health` → HTTP 200 với `{"status":"ok","database":"ok","websocket":"ok",...}`. `websocket` phải là `ok`; nếu là `degraded` thì vòng giám sát nhịp tim không chạy và **không trạm nào được đánh offline nữa** — dừng triển khai, xem log backend.
+- Log backend phải có `Station offline monitor active` và `Durable notification outbox worker active`.
+
+Image backend cũng tự chạy `alembic upgrade head` trước Uvicorn; chạy migration thủ công ở trên giúp phát hiện lỗi trước khi mở API. Production không dùng `Base.metadata.create_all()` thay Alembic. Nginx build frontend trong image, không phụ thuộc dist có sẵn.
 
 Không khởi động API nếu migration thất bại. Nếu port 80 đã do proxy khác dùng, chỉnh mapping Nginx hoặc routing proxy hiện có trước `up`.
+
+### Kiểm tra đường phục vụ âm thanh (bắt buộc, không bỏ qua)
+
+```bash
+curl -sI http://127.0.0.1/assets/audio/<ten-tep-coi>.wav | grep -i content-type
+```
+
+Phải trả `Content-Type: audio/wav` (mp3 → `audio/mpeg`). Nếu thấy `application/octet-stream`, Nginx đang chạy config cũ: trình duyệt có quyền từ chối phát `<audio>`, nghĩa là trạm hiện báo động trên màn hình mà loa không kêu.
 
 ## 6. Cấu hình nghiệp vụ và provisioning
 
 1. Mở `/login`, đăng nhập Admin bootstrap; mở `/admin`.
 2. Tạo khoa và users ADMIN/OPERATOR; chỉ ADMIN truy cập reports/export.
-3. Upload audio local (WAV/MP3/OGG), dưới 20MB và chừa dung lượng multipart. Nginx body limit 20M nên file sát 20MB có thể bị 413; dùng file nhỏ hơn giới hạn này. Kiểm tra từng URL audio trả HTTP 200 và phát thực trên loa.
+3. Upload audio local (WAV/MP3/OGG), dưới 20MB và chừa dung lượng multipart. Nginx body limit 20M nên file sát 20MB có thể bị 413; dùng file nhỏ hơn giới hạn này. Kiểm tra từng URL audio trả HTTP 200 **và đúng `Content-Type`** (mục 5).
 4. Tạo receiver groups, stations và memberships. Kiểm tra group-in/group-out bằng alarm thử; nếu UI thiếu thao tác membership, dùng API có sẵn ở `/api/docs`, không sửa DB tùy tiện.
-5. Tạo alarm types: màu, audio sequence theo thứ tự, repeat/interval, validity mặc định 300 giây (range 10–86400), permission theo khoa. Alarm type không receiver group nhắm mọi trạm enabled.
-6. Trên **từng máy nhận**, đăng nhập Admin → `/kiosk` → chọn trạm → XÁC NHẬN THIẾT BỊ. Browser tự lưu credential; không nhập/copy token. Xác nhận lại rotate token và ngắt máy dùng credential cũ.
+5. Tạo alarm types: màu, audio sequence theo thứ tự, repeat/interval, validity mặc định 300 giây (range 10–86400), permission theo khoa. **Mỗi alarm type bắt buộc có ít nhất một tệp âm thanh** — tạo hoặc cập nhật với `audio_sequence` rỗng bị từ chối 422 (trước đây tạo được một mã báo động câm). Alarm type không receiver group nhắm mọi trạm enabled.
+6. Trên **từng máy nhận**, đăng nhập Admin → `/kiosk` → chọn trạm → XÁC NHẬN THIẾT BỊ. Browser tự lưu credential; không nhập/copy token. Xác nhận lại rotate token và ngắt máy dùng credential cũ (đóng bằng `1008` kèm lý do).
 7. Đăng xuất Admin nếu máy chỉ chạy receiver; mở `/kiosk` bằng profile browser cố định. Không xóa localStorage/profile sau provisioning. Đổi origin/profile cần xác nhận lại.
 8. Chạy TEST LOA, TEST HIỂN THỊ, TEST KẾT NỐI; xác nhận nghe được vật lý, không chỉ READY trên UI.
 9. Cấu hình kiosk auto-launch, volume/mute, power/screen sleep và thử reboot thiết bị. Ví dụ Windows launcher:
@@ -161,10 +192,13 @@ chrome.exe --kiosk "https://redcode.<internal-domain>/kiosk" --autoplay-policy=n
 
 Android cần kiosk browser autoplay được cấu hình hoặc WebView policy phù hợp. Nghiệm thu theo thiết bị/version thực; flag không thay bằng chứng loa.
 
+Khi sửa cấu hình một trạm đang trực: đổi **tên/vị trí/nhóm nhận** không ngắt thiết bị (credential giữ nguyên). Đổi **token** hoặc **mã trạm** sẽ đóng socket cũ kèm lý do đọc được — thiết bị đó cần được xác nhận lại tại chỗ.
+
 ## 7. Theo dõi sau triển khai
 
-- `/api/health`: DB/core và n8n degraded; `/api/health/db`, `/api/health/websocket` để chẩn đoán. Health HTTP 200 **không đủ**: đọc JSON status/database, đối chiếu device monitor và heartbeat thật.
-- Admin monitor: ONLINE/OFFLINE/audio/last seen; kiểm tra kết nối đúng trạm. HEARTBEAT mặc định 5s, offline threshold 15s, monitor tick 5s.
+- `/api/health`: đọc **từng trường**, không chỉ HTTP 200. `database`, `websocket` (`degraded` = vòng giám sát nhịp tim chết), `n8n`, `active_stations`/`total_stations`. Chẩn đoán sâu: `/api/health/db` (kèm latency), `/api/health/websocket` (danh sách mã trạm đang kết nối).
+- Admin monitor: ONLINE/OFFLINE/audio/last seen. `ONLINE` nghĩa là có WebSocket thật; `AUDIO READY` chỉ có giá trị khi trạm đang ONLINE. HEARTBEAT mặc định 5s, offline threshold 15s, monitor tick 5s.
+- Sau mỗi lần phát báo động, đối chiếu `target_station_count` với `delivered_station_count`. Lệch nhau nghĩa là có trạm đích chưa nhận được — xử lý theo mục 11, không coi là "đã phát xong".
 - Audit: CREATED, RECEIVED, DISPLAYED, audio, DISMISSED, ALARM_CANCELLED, EXPIRED, DEVICE_CONNECTED/DISCONNECTED và n8n attempts.
 - Outbox lease stale 5 phút, retry capped exponential; n8n cần dedup stable Idempotency-Key. Job hết max attempts giữ FAILED; chưa có đầy đủ Admin retry UI, chuyển quy trình xử lý backlog cho người vận hành, không reset hàng loạt attempt tùy tiện.
 - Theo dõi disk DB/audio/logs, backup completion/restore drill và clocks. Không xóa audit/history để giảm dung lượng.
@@ -215,7 +249,7 @@ docker run --rm --mount type=volume,src=redcode_restore_audio,dst=/audio \
 ```
 
 4. Checkout đúng release, chạy stack restore **riêng** với Compose copy/override: container names riêng, port khác, volume name `redcode_restore_audio`, DATABASE_URL trỏ DB test, secret riêng, n8n tắt hoặc endpoint test. Compose gốc có fixed container names/audio volume nên chỉ `-p` **không đủ** để cách ly.
-5. Kiểm tra Alembic revision, counts alarms/events/station states, login, reports/XLSX, audio hashes/HTTP và alarm thử trên receiver test. Credential DB đã restore có thể tồn tại nhưng browser test phải được provisioning riêng; không nối máy production vào stack restore.
+5. Kiểm tra Alembic revision, counts alarms/events/station states, login, reports/XLSX, audio hashes/HTTP (kèm `Content-Type`) và alarm thử trên receiver test. Credential DB đã restore có thể tồn tại nhưng browser test phải được provisioning riêng; không nối máy production vào stack restore.
 6. Ghi thời gian restore, RPO/RTO thực, chênh lệch counts/hash và evidence. Xóa môi trường drill sau khi hoàn tất theo quy trình lưu evidence.
 
 ## 10. Nâng cấp và rollback
@@ -227,6 +261,8 @@ docker run --rm --mount type=volume,src=redcode_restore_audio,dst=/audio \
 3. `docker compose stop backend`; checkout release mới, build images; migrate như mục 5 khi API chưa chạy.
 4. `docker compose up -d`; kiểm tra health/revision/login/station reconnect, alarm thử/cancel/dismiss/expiry/audio/report.
 5. Theo dõi outbox backlog, audit/device và lưu evidence nghiệm thu trước bàn giao.
+
+Lưu ý khi upgrade lên release này: sau `up -d`, mọi trạm hiện `OFFLINE` cho tới khi thiết bị kết nối lại — đây là hành vi đúng (cờ cũ bị xóa), không phải sự cố. Cửa sổ bảo trì nên có người xác nhận từng máy trạm trở lại ONLINE.
 
 ### DB dev cũ tạo bằng create_all
 
@@ -240,15 +276,45 @@ Migration forward-only; **không** `alembic downgrade` hoặc xóa bảng. Khi c
 
 | Triệu chứng | Kiểm tra/hành động |
 |---|---|
-| Backend không start | Logs migration/config; PostgreSQL alias/network/quyền/secret/demo/origin; không dùng create_all sửa production |
+| Backend không start | Log migration/config; PostgreSQL alias/network/quyền/secret/demo/origin; không dùng create_all sửa production. Lỗi `Fresh production installation requires INITIAL_ADMIN_PASSWORD` là thiếu biến, không phải lỗi DB |
+| `/api/health` trả `websocket: degraded` | Vòng giám sát nhịp tim đã chết — không trạm nào được đánh offline nữa. Restart backend và kiểm tra log; coi mọi trạng thái ONLINE hiện tại là không đáng tin |
+| Trạm hiện ONLINE nhưng không nhận alarm | Kiểm tra `/api/health/websocket` xem mã trạm có trong `active_station_codes` không. Nếu không có, dashboard đang hiện trạng thái cũ: cho thiết bị kết nối lại |
+| Trạm không kết nối được, UI báo phiên bị chiếm | Đang có thiết bị khác mở cùng mã trạm (đóng `4001`). Tìm máy thứ hai, không xóa profile để "thử lại" |
+| Trạm dừng thử lại vĩnh viễn | Credential bị từ chối (`1008`). Đọc lý do trong log/console; nếu do thu hồi token hoặc đổi mã trạm thì phải XÁC NHẬN THIẾT BỊ lại tại chỗ |
 | Nginx 502 | Backend status/log; migration chưa xong; proxy backend:8000 reachable |
 | WS không kết nối | Proxy Upgrade, ws/wss/origin, credential rotated, station enabled; không paste URL token vào ticket |
 | ONLINE nhưng không có alarm | Target snapshot/membership, permission, expiry, sync/dismiss tại trạm, đúng origin/profile |
-| Visual có, audio lỗi | Local asset HTTP 200, browser error/autoplay, volume/mute/loa; thực hiện retry trên trạm |
+| `delivered_station_count` < `target_station_count` | Có trạm đích chưa nhận: xem `active_station_codes`, thiết bị mất mạng, hoặc socket chết vừa bị dọn. Phát lại sau khi xử lý (cùng `idempotency_key` trả lại báo động đang hiệu lực; nếu đã kết thúc sẽ bị từ chối **409** — phát báo động mới) |
+| Visual có, audio lỗi | `curl -sI` kiểm tra `Content-Type` của asset; browser error/autoplay, volume/mute/loa; thực hiện retry trên trạm |
 | Audio upload 413 | Nginx body 20M tính cả multipart; giảm file size |
+| Không tạo được alarm type | `audio_sequence` rỗng bị từ chối 422 — mỗi loại báo động phải có ít nhất một tệp âm thanh |
 | n8n degraded | Core tiếp tục; xem webhook/network/attempt/backoff; workflow dedup; không xóa outbox |
 | Report lệch ngày | Filter theo hospital local day, thời gian DB UTC, NTP/timezone; interval [start,next day) |
 
 ## 12. Bàn giao vận hành
 
 Ghi: release hash/image, Alembic revision, topology/network/entry origin, inventory trạm/browser/loa, config/permissions/group mapping, backup/restore evidence, người trực và quy trình sự cố. Hoàn tất ma trận [kiểm thử](testing_guide.md). Những case chưa thực hiện ghi BLOCKED/PENDING; trạng thái local unit/live test không tự chứng nhận production-ready.
+
+## 13. Bằng chứng đã có và giới hạn
+
+Đợt nghiệm thu gần nhất (2026-10-11) đã chạy thật trên Docker:
+
+| Hạng mục | Kết quả |
+|---|---|
+| Bộ test backend | **69 passed** (trên DB SQLite tạm mới; `tests/test_p0_regressions.py` 14 test tái hiện lỗi đã sửa) |
+| Bộ test frontend (`npm test`) | **19 passed, 0 fail** |
+| `npm run build` | PASS (281.81 kB js / 29.40 kB css) |
+| `docker compose build` / `up` | PASS; cả hai container `Up` |
+| Chuỗi Alembic trên DB trắng | PASS toàn bộ `8280022f67e9 → 20261007_integrations`, seed thành công |
+| `/api/health` qua Nginx | `{"status":"ok","database":"ok","websocket":"ok","n8n":"disabled",...}` |
+| Khói end-to-end qua Nginx | **23/23 đạt** (đăng nhập, trạm WS, phát báo động, đếm trạm nhận, phát lại, hủy, `SYNC_REQUIRED`, đóng `4001`, nhịp tim sai token `401`) |
+| Khói khởi động lại | **8/8 đạt** (cờ cũ bị xóa, trạm OFFLINE, kết nối lại nhận `SYNC_REQUIRED` và đồng bộ đúng báo động còn hiệu lực) |
+| `curl -I /assets/audio/red_code_1.wav` | `200` + `Content-Type: audio/wav` |
+| CI GitHub Actions | run `38114856575` trên `a8c74e2`: `completed/success`, cả ba job backend/frontend/docker success, không step nào bị skip |
+
+**Chưa có bằng chứng — không được coi là đã nghiệm thu:**
+
+- **Thiết bị thật**: chưa có PC Windows kiosk, tablet Android hay Android TV box nào chạy thử. Phát âm thanh thực tế, chính sách autoplay của trình duyệt, và độ trễ trên LAN 50–100 thiết bị **chưa được kiểm chứng**.
+- **PostgreSQL thật**: chuỗi Alembic đã chạy thật nhưng trên SQLite; chưa chạy trên một instance PostgreSQL của REDCODE.
+- **Sao lưu/phục hồi**: chưa diễn tập `pg_dump`/`pg_restore` khứ hồi (mục 8–9) vì chưa có DB PostgreSQL của REDCODE.
+- **n8n chết không ảnh hưởng báo động**: mới kiểm ở mức API/outbox, chưa ở mức thiết bị thật.

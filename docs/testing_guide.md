@@ -1,6 +1,6 @@
 # REDCODE — Hướng dẫn kiểm thử và nghiệm thu thực tế
 
-Ngày cập nhật: 2026-10-07. Release tham chiếu `9b01d4a`. Triển khai staging/production theo [production_deployment.md](production_deployment.md); yêu cầu chính thức [project.md](../project.md).
+Ngày cập nhật: 2026-10-11. Release tham chiếu `84ad2d6`, schema head `20261007_integrations`. Triển khai staging/production theo [production_deployment.md](production_deployment.md); yêu cầu chính thức [project.md](../project.md).
 
 ## 1. Các lớp kiểm thử
 
@@ -12,7 +12,7 @@ Ngày cập nhật: 2026-10-07. Release tham chiếu `9b01d4a`. Triển khai sta
 | Staging thực | PostgreSQL + Nginx + browsers + n8n test + network faults | Nghiệm thu inventory thiết bị chưa được thử |
 | Site acceptance | PC/Android/loa, boot/refresh/sleep và routing LAN thực | Case còn BLOCKED/PENDING |
 
-Kết quả gần nhất: 49 backend PASS, 8 JS PASS, build PASS; live localhost/SQLite 100 sockets × 10 alarms, lost=0 duplicate=0, p50 0,069s/max 0,369s. Đây là evidence baseline, không phải kết quả của lần chạy tại bệnh viện.
+Kết quả gần nhất (2026-10-11): **69 backend PASS, 19 JS PASS**, `npm run build` PASS; khói end-to-end qua Nginx trong container 23/23 đạt và khói khởi động lại 8/8 đạt. Đây là evidence baseline chạy trên SQLite trong container, **không phải** kết quả của lần chạy tại bệnh viện và không phải nghiệm thu thiết bị thật. Chi tiết đầy đủ và danh sách giới hạn: [runbook mục 13](production_deployment.md#13-bằng-chứng-đã-có-và-giới-hạn).
 
 ## 2. Chuẩn bị test fixture thực tế
 
@@ -116,8 +116,9 @@ State và audit dùng server time. Phát audio trên test script là protocol si
 3. Browser ACK: RECEIVED → DELIVERED; DISPLAYED → DISPLAYED; play resolve → AUDIO_STARTED; sequence/repeats kết thúc → AUDIO_COMPLETED.
 4. Replay mỗi event; gửi RECEIVED/DISPLAYED cũ sau completion: không lùi state, không audit/timestamp duplicate.
 5. Gửi AUDIO_COMPLETED trước start trong test protocol: backend không nhận transition nhảy cóc.
+6. Đọc `target_station_count` và `delivered_station_count` trong phản hồi tạo báo động: phải khớp số trạm đích và số trạm **thật sự** nhận được. Lặp lại khi một trạm đích đang offline: `target` giữ nguyên, `delivered` giảm đúng một.
 
-**PASS:** timestamps phù hợp sự kiện thực, âm thanh nghe đúng sequence/repeat/interval; không PENDING + received_at non-null; không báo started trước play thành công. Chụp DB sau mỗi bước bằng regression/protocol test, video browser để xác nhận playback thật.
+**PASS:** timestamps phù hợp sự kiện thực, âm thanh nghe đúng sequence/repeat/interval; không PENDING + received_at non-null; không báo started trước play thành công; `delivered_station_count` không bao giờ lớn hơn số trạm đang thực sự có kênh nhận. Chụp DB sau mỗi bước bằng regression/protocol test, video browser để xác nhận playback thật.
 
 ### T03 — Scenario B: local dismiss
 
@@ -125,7 +126,7 @@ Phát X tới S1/S2. S1 dismiss khi audio đang phát và khi đã hoàn tất. 
 
 ### T04 — Scenario C: global cancel
 
-Phát A/B trong FIFO; cancel head A: tất cả target dừng A và tiến B. Cancel pending B: chỉ bỏ B, không restart head. Dashboard nhận ALARM_CANCELLED; global CANCELLED, có audit actor. Cancel lặp idempotent. Sau deadline vẫn CANCELLED, không EXPIRED. Outbox chỉ notification created, không end/cancel.
+Phát A/B trong FIFO; cancel head A: tất cả target dừng A và tiến B. Cancel pending B: chỉ bỏ B, không restart head. Dashboard nhận ALARM_CANCELLED; global CANCELLED, có audit actor. Cancel lặp idempotent. Sau deadline vẫn CANCELLED, không EXPIRED. Outbox chỉ notification created, không end/cancel. Phát lại báo động đã kết thúc bằng cùng `idempotency_key` phải bị từ chối **409** — không được trả về bản ghi cũ với 201, vì như vậy người trực tưởng vừa phát được báo động trong khi không còi nào hú.
 
 ### T05 — Global expiry
 
@@ -141,6 +142,7 @@ Monitor quét mỗi 5s nên server status/broadcast có thể muộn đến mộ
 4. S3 ngoài group không nhận B. Dismiss B ở S1 rồi refresh: không replay B.
 5. Trong staging chặn tạm active-sync HTTP nhưng WS sống, bỏ chặn: sync retry phải nhận ACTIVE còn thiếu.
 6. Mở/reload profile S1 để socket B thay A: cleanup A không đánh dấu socket mới offline; heartbeat/alarm mới vẫn tới.
+7. Trạm chỉ gửi nhịp tim HTTP mà không có WebSocket: phản hồi phải là `websocket_connected=false` và `can_receive_alarms=false`, và bảng trạm **không** được hiện `AUDIO READY`. Ghi FAIL nếu dashboard báo ONLINE cho thiết bị không có kênh nhận báo động.
 
 **PASS:** không mất ACTIVE, không phát lại CANCELLED/EXPIRED/DISMISSED; Admin OFFLINE/ONLINE đúng. Offline phát hiện thường sau threshold 15s + monitor tick tối đa 5s; ghi elapsed, không yêu cầu chính xác 15,000s.
 
@@ -162,7 +164,9 @@ Repo tự động test claim/crash/recovery; để tái hiện live cần test h
 
 ### T09 — Scenario G: restart và dữ liệu bền vững
 
-Trên staging: phát ACTIVE validity đủ lâu, ghi state/audit/outbox, restart backend. Stations reconnect/sync ACTIVE; startup reconcile ONLINE cũ, outbox tiếp tục; local dismissed/cancelled/expired không replay. Restart Nginx/container stack; kiểm tra audio/config/history vẫn giữ. Restart PostgreSQL trong cửa sổ test riêng: server phục hồi DB, không mất dữ liệu hoặc tạo duplicate do retry. Restore drill DB/audio theo runbook deployment và đối chiếu counts/hashes.
+Trên staging: phát ACTIVE validity đủ lâu, ghi state/audit/outbox, restart backend. **Ngay sau restart, cờ `websocket_connected`/`audio_ready`/`client_ready` cũ phải bị xóa và trạm hiện `OFFLINE`** — còn ONLINE xanh cho một thiết bị chưa kết nối lại là lỗi phải ghi FAIL, không phải trạng thái bình thường. Stations reconnect/sync ACTIVE; startup reconcile ONLINE cũ, outbox tiếp tục; local dismissed/cancelled/expired không replay. Restart Nginx/container stack; kiểm tra audio/config/history vẫn giữ. Restart PostgreSQL trong cửa sổ test riêng: server phục hồi DB, không mất dữ liệu hoặc tạo duplicate do retry. Restore drill DB/audio theo runbook deployment và đối chiếu counts/hashes.
+
+Kiểm tra kèm sau mỗi lần dựng stack: `curl -sI <origin>/assets/audio/<tep-coi>.wav` trả `Content-Type: audio/wav`. Sai kiểu media nghĩa là trình duyệt có quyền từ chối phát `<audio>` — trạm hiện báo động mà loa không kêu.
 
 ### T10 — Scenario H: tải 50/100 trạm và FIFO
 

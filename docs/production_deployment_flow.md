@@ -1,13 +1,19 @@
 # REDCODE — Sơ đồ triển khai production từng bước
 
-Tài liệu dành cho người trực tiếp triển khai tại bệnh viện. Tham chiếu code `9b01d4a`, migration head `20261007_permissions`.
-
-**Cấu hình chỉ bằng `.env`:** IT chuẩn bị PostgreSQL/network/user trước, rồi khai báo `DATABASE_URL` (và `N8N_ENABLED`/`N8N_WEBHOOK_URL` nếu dùng n8n) trong `.env`. Container launcher chạy `alembic upgrade head` rồi khởi động API; thiếu `DATABASE_URL` ở production thì dừng ngay lúc khởi động. Không còn wizard thiết lập database và không còn trang `/admin/settings` cho n8n. Chi tiết tại đầu [runbook](production_deployment.md).
+Tài liệu dành cho người trực tiếp triển khai tại bệnh viện. Tham chiếu code `84ad2d6`, migration head `20261007_integrations`.
 
 - **Đọc sơ đồ và làm theo thứ tự trong tài liệu này.**
-- Lệnh backup/restore và cấu hình đầy đủ: [Runbook production](production_deployment.md).
+- Lệnh backup/restore, bảng biến `.env` đầy đủ và bằng chứng nghiệm thu: [Runbook production](production_deployment.md).
 - Các bài nghiệm thu và mẫu biên bản: [Hướng dẫn kiểm thử](testing_guide.md).
 - Các lệnh sử dụng **Bash trên Linux**, tại root repository trừ khi ghi khác. `<...>` là thông tin phải thay theo server thực tế.
+
+## 0. Ba điều phải biết trước khi bắt đầu
+
+**Cấu hình chỉ bằng `.env`.** IT chuẩn bị PostgreSQL/network/user trước, rồi khai báo `DATABASE_URL` (và `N8N_ENABLED`/`N8N_WEBHOOK_URL` nếu dùng n8n) trong `.env`. Container launcher chạy `alembic upgrade head` rồi khởi động API; thiếu `DATABASE_URL` ở production thì dừng ngay lúc khởi động. Không còn wizard thiết lập database, không còn `/admin/settings` cho n8n.
+
+**Trạng thái trạm nay chỉ nói điều chứng minh được.** Một trạm chỉ `ONLINE`/`AUDIO READY` khi có kênh WebSocket thật. Sau khi khởi động lại máy chủ, toàn bộ cờ cũ bị xóa và mọi trạm hiện `OFFLINE` cho tới khi kết nối lại — đây là hành vi đúng. Trong cửa sổ triển khai/upgrade phải có người xác nhận từng máy trở lại ONLINE.
+
+**Hai con số thay cho một lời khẳng định.** Phản hồi phát báo động có `target_station_count` (số trạm đích) và `delivered_station_count` (số trạm gửi thành công). Nghiệm thu phải đối chiếu cả hai; `delivered < target` là có trạm chưa nhận, không phải "đã phát xong".
 
 ## 1. Nhìn nhanh: đường đi của hệ thống
 
@@ -54,7 +60,7 @@ flowchart TD
     S7 --> MIG{Migration thành công?}
     MIG -->|Không| ERR[Giữ API dừng; xem logs và xử lý / restore]
     MIG -->|Có| S8[8. Khởi chạy backend và Nginx]
-    S8 --> HEALTH{Health / revision / giao diện đạt?}
+    S8 --> HEALTH{Health / revision / giao diện / MIME audio đạt?}
     HEALTH -->|Không| DEBUG[Chẩn đoán DB / proxy / cấu hình]
     DEBUG --> S8
     HEALTH -->|Có| S9[9. Admin cấu hình khoa / audio / trạm / group / quyền]
@@ -90,7 +96,7 @@ Nếu công cụ không hiển thị Mermaid, đọc theo chuỗi: **Chuẩn b�
 
 ### Bước 1 — Chốt phạm vi và cửa sổ triển khai
 
-**Thực hiện:** chọn release, địa chỉ truy cập, khoa/nhóm thử, danh sách trạm và người phụ trách. Nếu nâng cấp hệ thống đang dùng, chọn cửa sổ bảo trì và thông báo quy trình liên lạc thay thế.
+**Thực hiện:** chọn release, địa chỉ truy cập, khoa/nhóm thử, danh sách trạm và người phụ trách. Nếu nâng cấp hệ thống đang dùng, chọn cửa sổ bảo trì, thông báo quy trình liên lạc thay thế, và bố trí người xác nhận từng máy trạm kết nối lại (xem mục 0).
 
 **Kết quả cần có:** phiếu mục 3 đã điền, lịch triển khai và release xác định. Ghi rõ đây là fresh install hay upgrade.
 
@@ -140,11 +146,11 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-3. Chỉnh ENVIRONMENT=production, DEMO_MODE=false, DATABASE_URL PostgreSQL, SECRET_KEY riêng ≥32 ký tự, origin cụ thể và INITIAL_ADMIN_PASSWORD cho fresh bootstrap.
-4. DATABASE_URL dùng **PostgreSQL alias**, không localhost của backend; URL-encode password.
+3. Điền đủ các biến theo bảng trong runbook mục 4: `ENVIRONMENT=production`, `DEMO_MODE=false`, `DATABASE_URL` PostgreSQL, `SECRET_KEY` riêng ≥32 ký tự, origin cụ thể, và `INITIAL_ADMIN_PASSWORD` cho lần bootstrap đầu.
+4. `DATABASE_URL` dùng **PostgreSQL alias**, không localhost của backend; URL-encode password.
 5. Nếu dùng HTTPS: cấu hình TLS/proxy `/ws` Upgrade và bảo vệ query credentials trong logs ở mọi proxy.
 
-**Điều kiện qua bước:** `.env` không có credentials mẫu, origin khớp browser; external network tồn tại. Không lưu output chứa secret trong evidence.
+**Điều kiện qua bước:** `.env` không có credentials mẫu, origin khớp browser; external network tồn tại. Không lưu output chứa secret trong evidence. Cấu hình sai sẽ bị `app/config.py` chặn lúc khởi động với thông báo rõ ràng — đó là kết quả đúng, không phải lỗi cần vượt qua.
 
 ### Bước 6 — Validate cấu hình và build images
 
@@ -164,7 +170,7 @@ docker compose stop backend
 docker compose run --rm --no-deps backend alembic upgrade head
 ```
 
-**Kết quả cần có:** upgrade PASS đến revision release; với release tham chiếu là `20261007_permissions`. Giữ DB/history, normalized permission và legacy import đúng.
+**Kết quả cần có:** upgrade PASS đến revision release. Với release tham chiếu, `alembic current` trả **`20261007_integrations (head)`**; chuỗi đầy đủ trên DB trắng là `8280022f67e9 → 20261006_runtime → 20261006_validity → 20261007_permissions → 20261007_integrations`. Giữ DB/history, normalized permission và legacy import đúng.
 
 **Nếu FAIL:** giữ backend dừng, ghi lỗi migration, kiểm tra quyền/alias/schema. Xem nhánh phục hồi mục 7. Không dùng create_all/downgrade giả để vượt lỗi.
 
@@ -176,12 +182,21 @@ docker compose ps
 docker compose exec -T backend alembic current
 docker compose exec -T nginx nginx -t
 curl --fail --silent --show-error http://127.0.0.1/api/health
+curl -sI http://127.0.0.1/assets/audio/<ten-tep-coi>.wav | grep -i content-type
 docker compose logs --tail=100 backend nginx
 ```
 
 Lệnh curl trên giả định Compose port 80 mặc định; nếu port/entrypoint đã đổi, dùng URL thực. Mở origin từ máy ở khoa và kiểm tra `/login`, `/kiosk`, local audio và WS.
 
-**Điều kiện qua bước:** containers chạy, revision đúng, JSON database/status OK, giao diện qua Nginx mở được. n8n degraded được ghi riêng; không chặn core. HTTP 200 đơn thuần chưa chứng minh schema/loa/routing hoạt động.
+**Điều kiện qua bước:**
+
+- containers chạy, revision đúng `20261007_integrations`;
+- JSON health có `database: "ok"` **và** `websocket: "ok"` — `websocket: "degraded"` nghĩa là vòng giám sát nhịp tim đã chết, dừng lại và xem log;
+- log backend có `Station offline monitor active` và `Durable notification outbox worker active`;
+- audio trả `Content-Type: audio/wav` (không phải `application/octet-stream`) — sai kiểu media thì loa không kêu dù UI hiện báo động;
+- giao diện qua Nginx mở được.
+
+n8n degraded được ghi riêng; không chặn core. HTTP 200 đơn thuần chưa chứng minh schema/loa/routing hoạt động.
 
 ### Bước 9 — Cấu hình nghiệp vụ theo thứ tự
 
@@ -197,11 +212,11 @@ flowchart LR
     P --> READY[Sẵn sàng thử alarm]
 ```
 
-1. Admin login → `/admin`; fresh production chỉ có Admin bootstrap.
+1. Admin login → `/admin`; fresh production chỉ có Admin bootstrap (tạo từ `INITIAL_ADMIN_PASSWORD`, thiếu biến này thì tiến trình seed dừng có chủ ý).
 2. Tạo khoa và users.
 3. Tạo stations, groups và đúng membership; thiếu UI thao tác thì dùng API đã có trong `/api/docs`.
-4. Upload audio, mở URL kiểm tra; file nhỏ hơn limit 20M kể cả multipart.
-5. Cấu hình alarm types và quyền khoa. Kiểm tra group-in/out; type không group nhận toàn bộ stations enabled.
+4. Upload audio, mở URL kiểm tra (HTTP 200 **và** `Content-Type` đúng); file nhỏ hơn limit 20M kể cả multipart.
+5. Cấu hình alarm types và quyền khoa. **Mỗi alarm type phải có ít nhất một tệp âm thanh** — `audio_sequence` rỗng bị từ chối 422. Kiểm tra group-in/out; type không group nhận toàn bộ stations enabled.
 6. Chốt validity/repeat/interval với người vận hành; không dùng fixture ngắn của test làm mặc định production ngoài ý muốn.
 
 **Kết quả cần có:** bảng mapping khoa → quyền alarm → nhóm → stations → audio được người vận hành xác nhận.
@@ -227,7 +242,9 @@ flowchart TD
 
 **Thực hiện trên máy nhận, không chỉ từ máy Admin:** chọn đúng station → xác nhận → logout Admin nếu chạy receiver độc lập → giữ nguyên profile/origin → launcher mở `/kiosk`.
 
-**Kết quả cần có cho từng máy:** ONLINE, RTT có phản hồi, overlay test đúng, loa nghe thực, boot/refresh giữ identity. Xác nhận lại làm credential cũ bị thu hồi. READY trên browser không chứng minh loa không mute/rút dây.
+**Kết quả cần có cho từng máy:** ONLINE, RTT có phản hồi, overlay test đúng, loa nghe thực, boot/refresh giữ identity. Xác nhận lại làm credential cũ bị thu hồi (đóng `1008` kèm lý do). READY trên browser không chứng minh loa không mute/rút dây.
+
+**Khi sửa cấu hình một trạm đang trực:** đổi tên/vị trí/nhóm nhận không ngắt thiết bị; đổi token hoặc mã trạm sẽ ngắt và buộc xác nhận lại tại chỗ. Đừng xóa profile/localStorage để "thử lại" — làm vậy mất credential.
 
 ### Bước 11 — Nghiệm thu trước bàn giao
 
@@ -241,6 +258,12 @@ Thực hiện T01–T13 trong [testing guide](testing_guide.md), tối thiểu:
 6. Audio failure/retry và PC/Android unattended thật.
 7. n8n down/core vẫn alarm; outbox retry/crash recovery.
 8. Server/DB/container restart, tải real sockets qua entrypoint staging và backup restore drill.
+
+Ba điểm kiểm tra riêng của release này, phải ghi vào biên bản:
+
+- **Số trạm nhận:** mỗi lần phát, đối chiếu `delivered_station_count` với `target_station_count`; lệch nhau phải giải trình.
+- **Phát lại báo động đã kết thúc:** phải bị từ chối **409**, không được trả về bản ghi cũ như thể vừa phát.
+- **Sau restart máy chủ:** cờ `websocket_connected`/`audio_ready` cũ đã bị xóa, trạm hiện `OFFLINE`, và kết nối lại nhận `SYNC_REQUIRED` rồi đồng bộ đúng báo động còn hiệu lực.
 
 **Điều kiện bàn giao:** có biên bản từng case, release/revision/evidence, không dùng mock/build thay kiểm chứng site. FAIL/BLOCKED cần owner và kế hoạch xử lý, không chuyển thành PASS chỉ vì service đã chạy.
 
@@ -265,12 +288,16 @@ flowchart TD
     RESULT -->|Không| REC[Chẩn đoán; restore khi cần theo procedure]
     RESULT -->|Có| UP[Up containers mới]
     UP --> SMOKE[Health / login / reconnect / alarm / audio / report]
-    SMOKE --> PASS{Smoke test đạt?}
+    SMOKE --> RECONNECT{Xác nhận lại từng máy trạm?}
+    RECONNECT -->|Chưa| REC
+    RECONNECT -->|Rồi| PASS{Smoke test đạt?}
     PASS -->|Không| REC
     PASS -->|Có| HANDOFF[Bàn giao release mới và theo dõi]
 ```
 
 Không chạy migration song song với API đang phục vụ trong quy trình này. Sau đổi `.env`, recreate containers bằng `up -d`; restart đơn thuần không nạp env mới.
+
+**Lưu ý riêng của release này:** ngay sau `up -d`, mọi trạm hiện `OFFLINE` vì cờ trạng thái cũ bị xóa. Đó là hành vi đúng; cửa sổ upgrade phải đủ dài để xác nhận từng máy kết nối lại và nhận `SYNC_REQUIRED` cho các báo động còn hiệu lực.
 
 ## 6. Luồng xử lý khi một bước thất bại
 
@@ -280,8 +307,11 @@ Không chạy migration song song với API đang phục vụ trong quy trình n
 | Build | Trước migration | Registry/package access, source/release | Cả images đúng release build PASS |
 | Migration | Giữ backend dừng | Alembic logs, revision/schema/quyền | Fix hoặc restore đã kiểm chứng |
 | Startup/502 | Trước cấu hình nghiệp vụ | Backend logs, revision, proxy/DNS | Health + UI + API qua Nginx đạt |
-| Trạm không kết nối | Trước nghiệm thu trạm | Origin/profile, enabled/token rotation, WS Upgrade | ONLINE và PING/PONG đúng |
+| Health `websocket: degraded` | Trước cấu hình nghiệp vụ | Log backend, vòng monitor nhịp tim | Restart backend và health trả `ok`; coi mọi ONLINE hiện tại là không đáng tin |
+| Audio sai Content-Type | Trước nghiệm thu trạm | `curl -sI` asset, config Nginx | Asset trả đúng kiểu media |
+| Trạm không kết nối | Trước nghiệm thu trạm | Origin/profile, enabled/token rotation, WS Upgrade, mã đóng `1008`/`4001` | ONLINE và PING/PONG đúng |
 | Không nghe loa | Không đóng audio acceptance | Asset/autoplay/volume/mute/cáp loa | Nghe thực và retry/lifecycle đúng |
+| `delivered < target` | Trước bàn giao | `active_station_codes`, mạng thiết bị, socket chết | Phát lại và đối chiếu đủ số trạm nhận |
 | Routing/FIFO/data lỗi | Trước bàn giao | Mapping/snapshot/queue/audit | Regression và test site lại PASS |
 
 ## 7. Sơ đồ rollback khi cần khôi phục
@@ -303,16 +333,19 @@ Schema forward-only: không `alembic downgrade`, không tự drop tables. Trư�
 
 ## 8. Checklist một trang cho người triển khai
 
-- [ ] Chốt release/IP/DNS/origin/inventory và cửa sổ triển khai.
+- [ ] Chốt release/IP/DNS/origin/inventory và cửa sổ triển khai (kèm người xác nhận lại từng máy).
 - [ ] Docker/LAN/NTP/PostgreSQL/network hoạt động.
 - [ ] Fresh DB hoặc backup/adoption procedure đúng tình trạng.
-- [ ] `.env` production riêng, không demo/wildcard/secret mẫu.
+- [ ] `.env` production riêng, không demo/wildcard/secret mẫu; `INITIAL_ADMIN_PASSWORD` có cho lần bootstrap đầu.
 - [ ] External network + TLS/proxy WebSocket đúng.
-- [ ] Build PASS; migrate PASS khi API dừng; revision đúng.
-- [ ] Containers + JSON health + UI/API/WS qua Nginx đạt.
-- [ ] Khoa/users/stations/groups/audio/types/permissions đúng mapping.
+- [ ] Build PASS; migrate PASS khi API dừng; `alembic current` = `20261007_integrations`.
+- [ ] Containers + JSON health (`database: ok`, `websocket: ok`) + UI/API/WS qua Nginx đạt.
+- [ ] Asset audio trả đúng `Content-Type` (`audio/wav`, không phải `application/octet-stream`).
+- [ ] Khoa/users/stations/groups/audio/types/permissions đúng mapping; mỗi alarm type có ≥1 tệp âm thanh.
 - [ ] Từng máy đã xác nhận, nghe loa thật, reboot/refresh/reconnect đạt.
 - [ ] Local dismiss/global cancel/expiry/missed alarm/audio failure đạt.
+- [ ] `delivered_station_count` khớp `target_station_count` trong các lần phát thử; phát lại báo động đã kết thúc bị từ chối 409.
+- [ ] Sau restart: cờ cũ bị xóa, trạm OFFLINE, kết nối lại nhận `SYNC_REQUIRED`.
 - [ ] n8n/outbox/restart/load/report/migration/logs đã kiểm tra.
 - [ ] Backup restore drill PASS, biên bản test và giới hạn được ghi.
 - [ ] Bàn giao người trực, lịch monitoring/test loa/backup và quy trình sự cố.
