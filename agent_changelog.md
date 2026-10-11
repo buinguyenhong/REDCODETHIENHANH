@@ -54,6 +54,11 @@ Kiểm tra chéo tài liệu với code (không dựa vào trí nhớ): chuỗi 
 
 Dọn dẹp: xóa các DB tạm `rc_*.db` trong `$TEMP` do các đợt trước để lại. `backend/redcode.db` của dự án không bị chạm tới. Không tạo container nào trong đợt này.
 
+- Commit `385c63e`, push `main` (`84ad2d6..385c63e`). Truy vấn GitHub API: run **`38120450184`**, head_sha `385c63e`, `status: completed`, `conclusion: **success**`. Trích conclusion từng job — **cả ba job success, không step nào bị skip**:
+  - `frontend`: 9 step, success, skipped `[]`
+  - `backend`: 12 step, success, skipped `[]`
+  - `docker`: 6 step, success, skipped `[]`
+
 ### Giới hạn
 
 - Đợt này **không chạy lại** Docker/stack; các bằng chứng Docker và e2e trong tài liệu là của đợt P0 trước (commit `a8c74e2`), đã ghi rõ nguồn trong mục 13 của runbook.
