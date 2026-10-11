@@ -34,6 +34,10 @@ Yêu cầu: tài liệu định hướng phát triển mới ("CẬP NHẬT Đ�
 - `import app.main` → OK; OpenAPI có **34 path**, không còn path `setup`/`settings`/`integration` nào.
 - Kiểm tra validator: production + `DATABASE_URL=""` → `ValidationError: Production requires a postgresql+asyncpg:// DATABASE_URL and DEMO_MODE=false...`; `N8N_ENABLED=true` + `N8N_WEBHOOK_URL=""` → `ValidationError: N8N_ENABLED=true requires N8N_WEBHOOK_URL`.
 - `grep` xác nhận không còn import `integration_settings`/`app.bootstrap`/`api.settings` trong `app/`, `tests/`, `start_server.py`.
+- Commit `80626c6`, push `main` (`6e6f60f..80626c6`). Truy vấn GitHub API: run **`38110812679`**, head_sha `80626c6f77deec93c3807679e45eb67b06200399`, `status: completed`, `conclusion: **success**`. Trích conclusion từng step — **cả ba job success, không step nào bị skip**:
+  - `backend`: `Initialize containers`, `Create live transport database`, `alembic upgrade head`, `pytest tests -v`, `Stop containers` — success
+  - `frontend`: `npm ci`, `npm test`, `npm run build` — success
+  - `docker`: build `backend/Dockerfile` và `nginx/Dockerfile` — success
 
 ### Giới hạn
 
@@ -42,6 +46,7 @@ Yêu cầu: tài liệu định hướng phát triển mới ("CẬP NHẬT Đ�
 - Bảng `integration_settings` vẫn nằm trong schema; dữ liệu cấu hình n8n cũ trong đó nay không còn được đọc.
 - Định hướng mới yêu cầu **không mở rộng n8n thành hệ thống quản lý tích hợp riêng** — việc gỡ trang Admin là bước đi theo hướng đó; phần kiểm chứng "n8n chết không ảnh hưởng báo động" ở mức thiết bị thật vẫn chưa có.
 - Không thay đổi schema, không migration mới.
+- **CI xanh không thay thế nghiệm thu Docker thật**: job `docker` chỉ *build* image, không `docker compose up` với `.env` production, nên đường `start_server.py` mới vẫn chưa chạy thật lần nào.
 
 ## 2026-10-11 — Merge nhánh sửa lỗi vào `main`, `main` xanh trở lại
 
