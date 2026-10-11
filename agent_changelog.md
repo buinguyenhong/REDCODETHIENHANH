@@ -49,6 +49,10 @@ Không có migration mới, không đổi schema. Không tạo container Postgre
 - **Khói kiểm thử khởi động lại** (`$TEMP/rc_e2e_restart.py`) → **8/8 đạt**: trạm ONLINE + AUDIO READY trước khi khởi động lại; `docker compose restart backend`; server khoẻ lại; cờ `websocket_connected` và `audio_ready` cũ **đã bị xóa**; trạm hiện OFFLINE; kết nối lại nhận `SYNC_REQUIRED`; báo động còn hiệu lực vẫn đồng bộ được (`ids=[7]`); trạm kết nối lại được đánh ONLINE.
 - `curl /assets/audio/red_code_1.wav` qua nginx → `status=200 type=audio/wav` (trước khi sửa: `application/octet-stream`).
 - Dọn dẹp: `docker compose down -v` — đã gỡ cả hai container, network và hai volume (`redcode_audio_data`, `rc_smoke_data`). `docker ps -a` trở lại đúng trạng thái ban đầu (chỉ còn `metabase`, `c-mssql` đều `Exited`). `backend/redcode.db` của dự án không bị chạm tới.
+- Commit `a8c74e2`, push `main` (`3f7cb15..a8c74e2`). Truy vấn GitHub API: run **`38114856575`**, head_sha `a8c74e2`, `status: completed`, `conclusion: **success**`. Trích conclusion từng job — **cả ba job success, không step nào bị skip**:
+  - `backend`: 12 step, success, skipped `[]`
+  - `frontend`: 9 step, success, skipped `[]`
+  - `docker`: 6 step, success, skipped `[]`
 
 ### Giới hạn
 
