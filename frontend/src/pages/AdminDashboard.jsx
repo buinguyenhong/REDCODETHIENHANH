@@ -589,14 +589,21 @@ export default function AdminDashboard() {
               <span>N8N INTEGRATION</span>
               <Share2 className="w-4 h-4 text-purple-600" />
             </div>
-            <div className="text-xl font-black text-slate-900 uppercase">{health?.n8n || 'DEGRADED'}</div>
+            {/* Giá trị này là CẤU HÌNH, không phải khả năng kết nối: /api/health
+                không gọi ra mạng ngoài, nên nó không biết n8n còn sống hay không.
+                Ghi rõ chữ "cấu hình" để thẻ này không tự nhận là đã kiểm tra n8n. */}
+            <div className="text-xl font-black text-slate-900 uppercase">
+              {health?.n8n === 'enabled' ? 'ĐÃ BẬT' : health?.n8n === 'disabled' ? 'CHƯA BẬT' : '—'}
+            </div>
             {/* n8n là đường phụ nên số này KHÔNG được đổi màu cảnh báo đỏ: báo
                 động nội bộ không đi qua đây. Nhưng thông báo đã bỏ hẳn vẫn phải
                 nhìn thấy được, nếu không thì nó chết im lặng trong system_events. */}
             <div className="text-xs text-slate-500 font-mono mt-0.5">
               {outbox?.exhausted
                 ? `${outbox.exhausted} thông báo bỏ hẳn · ${outbox.retryable_failed || 0} chờ thử lại`
-                : 'Non-blocking background'}
+                : health?.n8n === 'enabled'
+                  ? 'Báo động nội bộ không đi qua đây'
+                  : 'Không dùng · báo động nội bộ không đi qua đây'}
             </div>
           </div>
         </div>

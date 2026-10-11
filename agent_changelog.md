@@ -6,6 +6,103 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-11 — Sửa 4 phát hiện rà soát đợt hai (2 P1 + 2 P2) về race trạng thái trạm, ngắt do quá hạn, outbox và health
+
+Yêu cầu: người dùng dán danh sách 4 phát hiện từ đợt rà soát thứ hai (2 P1, 2 P2) và yêu cầu xác minh/sửa. Đã đọc lại code thật cho từng phát hiện trước khi sửa; **cả 4 đều đúng** với code hiện tại.
+
+Điểm chung của cả 4: đợt sửa trước đã đúng hướng nhưng dừng ở mức "kiểm tra rồi hành động", và mức đó vẫn để lọt một khe giữa lúc kiểm và lúc hành động. Đợt này chuyển sang **quyết định và thi hành trong cùng một bước**, và nguyên tắc "ghi sự thật hiện tại, không ghi ý định của người gọi".
+
+### Phát hiện và cách sửa
+
+**P1 — `backend/app/core/websocket_manager.py`: hai lượt ghi ONLINE/OFFLINE của cùng một trạm không được tuần tự hoá.** Phát hiện đúng. `_lock` chỉ bảo vệ sổ trong bộ nhớ; mỗi lượt ghi mở phiên DB riêng và `commit` là I/O, nên sau khi `_lock` được thả, một lượt ghi connect và một lượt ghi disconnect chạy song song và **lượt nào commit sau sẽ thắng**, bất kể cũ hay mới. Một phiên cũ hoàn toàn có thể commit OFFLINE *sau* khi phiên mới đã commit ONLINE, để lại database báo OFFLINE trong khi socket mới đang hoạt động — đúng lời nói dối nguy hiểm nhất với hệ thống này, vì bảng giám sát hiện một khoa đã tắt báo động trong lúc khoa đó đang nhận báo động bình thường.
+
+Sửa theo hai vế:
+
+1. **Ghi "sự thật đang đúng", không ghi "trạng thái tôi định đặt".** Hàm mới `_sync_station_db_status(station_code, event, readiness, seen_at)` đọc lại sổ phiên ngay trước khi ghi và ghi đúng giá trị vừa đọc, rồi **trả về** giá trị đó để lời gọi broadcast đi cùng một sự thật với bản ghi DB. Lượt ghi cuối cùng vì thế luôn là lượt đọc sự thật muộn nhất, nên database hội tụ về đúng trạng thái của bộ nhớ bất kể thứ tự hoàn thành giao dịch.
+2. **Tuần tự hoá theo từng trạm.** Thêm `_presence_locks` (một `asyncio.Lock` cho mỗi mã trạm, tạo lười qua `_presence_lock()`). Không dùng `_lock` cho việc này vì `_lock` không được giữ qua I/O mạng/database; cũng không dùng một lock toàn cục vì nhịp tim của 100 trạm ghi vài giây một lần sẽ xếp hàng sau nhau vô ích.
+
+Kèm theo, một hệ quả về kiểm toán: `_update_station_db_status` chỉ ghi `SystemEvent` khi **hành động của phiên khớp với trạng thái thật sự đã ghi** (`event == matched_event`). Một lượt ngắt bị phiên mới kế chỗ không phải là "trạm mất kết nối"; ghi audit như vậy khiến người đọc log tưởng một khoa vừa rơi khỏi hệ thống trong khi nó đang online. Ba đường dẫn cùng ghi trạng thái (kết nối, ngắt, cắt do quá hạn) nay dùng chung `_sync_station_db_status` + `_broadcast_station_status` + `_finalize_disconnect`, nên không còn tự dựng thông điệp riêng và lệch nhau.
+
+**P1 — `_enforce_timeouts()`: còn khe giữa "đã kiểm xong" và "đã đóng".** Phát hiện đúng. Code cũ kiểm lại nhịp tim dưới lock rồi **thả lock trước khi gọi `ws.close()`**; một nhịp tim hợp lệ vẫn có thể đến trong khe đó. Sửa: **rút phiên khỏi `active_stations`/`last_heartbeats` ngay trong cùng khối lock chứa lần kiểm cuối**, rồi mới đóng socket ngoài lock. Từ thời điểm rút, `update_heartbeat` và `touch_station` đều từ chối trạm không còn socket, nên nhịp tim tới muộn không thể làm sống lại phiên đã bị kết luận quá hạn — trạng thái và socket không còn cơ hội mâu thuẫn. Việc đóng socket (network I/O, có thể treo với kết nối half-open) vẫn nằm **ngoài** lock, đúng yêu cầu không giữ lock qua I/O mạng.
+
+Ghi thẳng giới hạn còn lại trong docstring thay vì tuyên bố đã loại bỏ hoàn toàn: **không có cách nào biết trước một nhịp tim sẽ tới ngay sau thời điểm quyết định** — đó là bản chất của mọi ngưỡng thời gian, không phải khe đồng bộ. Thứ được loại bỏ ở đây là **sự mâu thuẫn** (trạng thái nói ONLINE trong khi phiên đã bị cắt), không phải khả năng cắt muộn một nhịp.
+
+**P2 — `backend/app/api/system.py`: `POST /outbox/requeue-exhausted` phát lại toàn bộ lịch sử lỗi.** Phát hiện đúng: endpoint chuyển **mọi** bản ghi `EXHAUSTED` về `PENDING` trong một lần gọi, không trần số lượng, không trả về phạm vi còn lại. Sửa đúng theo đề xuất "có xác nhận số lượng và giới hạn phạm vi, không cần thêm module quản lý n8n phức tạp":
+
+- `?limit=` mặc định **50**, tối đa **200** (`ge=1, le=200` → vượt trần là 422). Trần là chủ ý: một lần gọi không giới hạn đẩy cả lịch sử lỗi nhiều tuần vào hàng đợi cùng lúc, và n8n vừa hồi phục sẽ nhận một đợt dội ngay lập tức.
+- `?ids=1&ids=2` để chỉ phát lại đúng các bản ghi đã xem trong `exhausted_recent` ở `GET /api/system/status`.
+- Phản hồi trả `requeued`, `limit`, `remaining_exhausted`, `has_more` — gọi lặp theo `has_more` khi cần nhiều hơn.
+- Chọn theo `created_at` tăng dần (cũ nhất trước, đúng thứ tự hàng đợi) và chốt danh sách trước khi ghi, để con số trả về đúng bằng số bản ghi đã chạm.
+
+**P2 — `backend/app/api/health.py`: health chính còn gọi HTTP sang n8n.** Phát hiện đúng: khi `N8N_ENABLED=true`, mỗi lần đọc `/api/health` có thể chờ tới 1,5 giây để hỏi `/healthz`. Hai vấn đề: một probe hạ tầng gọi endpoint này vài giây một lần sẽ dồn request vào đó, và **độ trễ của một hệ thống phụ quyết định độ trễ phép đo sức khoẻ hệ thống chính**. Sửa: `/api/health` **không gọi ra mạng ngoài**; trường `n8n` chỉ phản ánh **cấu hình** (`enabled`/`disabled`). Kiểm tra n8n sống hay không tách sang endpoint riêng `GET /api/health/n8n` (yêu cầu **ADMIN**, trả `status`/`reachable`/`latency_ms`), và n8n chết không bao giờ kéo `status` của REDCODE xuống.
+
+Frontend cập nhật theo: thẻ N8N ở bảng giám sát đổi từ một chữ nghe như thể đã kiểm tra kết nối sang `ĐÃ BẬT` / `CHƯA BẬT`, kèm dòng ghi rõ "báo động nội bộ không đi qua đây".
+
+**Không cần migration.** Không đổi schema, không thêm bảng, không đổi chuỗi Alembic (head vẫn `20261007_integrations`).
+
+### File đã sửa
+
+- `backend/app/core/websocket_manager.py` — `_presence_locks` + `_presence_lock()`; `_sync_station_db_status()`; `_broadcast_station_status()`; `_finalize_disconnect()`; `_update_station_db_status()` ghi theo sự thật và chỉ ghi audit khi hành động khớp; `_enforce_timeouts()` rút phiên trong cùng khối lock với lần kiểm cuối; ba đường dẫn connect/disconnect/timeout dùng chung một đường ghi.
+- `backend/app/api/health.py` — `/api/health` bỏ hẳn lời gọi HTTP ra ngoài; trường `n8n` là cấu hình; thêm `GET /api/health/n8n` (ADMIN).
+- `backend/app/api/system.py` — `POST /outbox/requeue-exhausted` thêm `limit`/`ids`, trả `remaining_exhausted`/`has_more`; bản ghi kiểm toán ghi kèm `limit`/`explicit_ids`.
+- `frontend/src/pages/AdminDashboard.jsx` — thẻ N8N hiện `ĐÃ BẬT`/`CHƯA BẬT` theo cấu hình.
+- `backend/tests/test_review_round2_regressions.py` — **file mới**, 5 test.
+- `docs/production_deployment.md`, `docs/production_deployment_flow.md`, `docs/testing_guide.md`, `docs/production-readiness.html` — cập nhật theo trần phát lại, endpoint `/api/health/n8n` và ngữ nghĩa "n8n = cấu hình".
+
+### Test bổ sung
+
+`backend/tests/test_review_round2_regressions.py` — mỗi phát hiện một test khoá hành vi đã sửa:
+
+1. `test_presence_writes_are_serialized_and_converge_to_truth` — bọc `_update_station_db_status` để đếm số lượt ghi chạy **đồng thời** (phải bằng 1) và cho lượt ghi OFFLINE của phiên cũ ngủ 0,30s trong khi lượt ONLINE của phiên mới ngủ 0,05s, rồi chạy hai lượt bằng `asyncio.gather`. Khẳng định: không có hai lượt ghi nào chồng nhau, lượt ghi cuối trả `True`, và **database kết thúc ở `ONLINE`** dù lượt OFFLINE chậm hơn.
+2. `test_superseded_disconnect_does_not_log_a_false_disconnect_event` — phiên mới đang giữ trạm rồi phiên cũ mới hoàn tất việc rời đi: trạng thái phải là `ONLINE` **và** không được có bản ghi `DEVICE_DISCONNECTED` cho trạm đó. Chiều ngược lại: ngắt thật thì phải có bản ghi kiểm toán (nếu không, log mất dấu sự kiện).
+3. `test_timeout_removes_session_before_closing_socket` — socket giả ghi lại trạng thái sổ phiên **tại đúng thời điểm `close()` được gọi**: lúc đó trạm phải đã bị rút khỏi `active_stations` và `touch_station()` phải trả `False`. Khẳng định thêm mã đóng `1011` và hai dict đã sạch.
+4. `test_requeue_exhausted_is_bounded_and_reports_remaining_scope` — `ids=` chỉ chạm đúng bản ghi được chọn (5 bản ghi, chọn 2 ⇒ `requeued == 2`); `limit=1` ⇒ `requeued == 1` và `has_more is True`; `limit=500` và `limit=0` ⇒ **422**; OPERATOR ⇒ 403.
+5. `test_health_never_calls_n8n_and_reports_configuration_only` — bật `N8N_ENABLED=true` trỏ vào cổng không có gì lắng nghe, `patch('httpx.AsyncClient')` ném lỗi nếu bị gọi: `/api/health` phải trả 200 trong **dưới 1 giây** với `n8n == 'enabled'`. `/api/health/n8n` không token ⇒ 401; có token ADMIN ⇒ `reachable is False`. Khi tắt n8n: `n8n == 'disabled'` và endpoint riêng trả `latency_ms is None`.
+
+### Commands/bằng chứng thực chạy
+
+```bash
+# Backend, trên DB SQLite tạm mới (KHÔNG dùng backend/redcode.db)
+cd backend
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_restored.db" \
+  ../venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+# → 81 passed, 4 warnings in 69.07s
+# (trước đợt này: 76 test; +5 test mới)
+
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_round2.db" \
+  ../venv/Scripts/python.exe -m pytest tests/test_review_round2_regressions.py -q -p no:cacheprovider
+# → 5 passed in 5.41s
+
+# Frontend
+cd frontend && npm test
+# → tests 19 / pass 19 / fail 0
+npm run build
+# → built in 6.29s; dist/assets/index-DkxAsS3X.js 282.41 kB (gzip 80.08 kB)
+```
+
+**Kiểm chứng rằng 5 test mới thật sự bắt được lỗi** (không phải test trang trí): tạm hoàn nguyên **đúng dòng code cũ** của cả bốn phát hiện (bỏ `_presence_lock` khỏi `_sync_station_db_status`, trả `event_type = event`, chuyển việc rút phiên xuống **sau** `ws.close()`, khôi phục `requeue-exhausted` không giới hạn, khôi phục lời gọi HTTP trong `/api/health`), chạy file test, rồi trả tất cả về nguyên trạng. Kết quả **5/5 đều FAIL đúng kỳ vọng**:
+
+```text
+FAILED test_presence_writes_are_serialized_and_converge_to_truth            assert True is False  (co 2 luot ghi chong nhau)
+FAILED test_superseded_disconnect_does_not_log_a_false_disconnect_event     assert not True       (co ban ghi DISCONNECTED gia)
+FAILED test_timeout_removes_session_before_closing_socket                   assert True is False  (phien con trong so khi close() chay)
+FAILED test_requeue_exhausted_is_bounded_and_reports_remaining_scope        assert 5 == 2         (ids= bi bo qua, requeue het 5)
+FAILED test_health_never_calls_n8n_and_reports_configuration_only           assert 'degraded' == 'enabled'
+5 failed in 2.96s
+```
+
+Sau khi trả file về nguyên trạng, chạy lại toàn bộ suite: **81 passed** (dòng lệnh đầu ở trên) — xác nhận không sót bản hoàn nguyên nào.
+
+### Giới hạn
+
+- **Chưa chạy lại Docker/e2e trong đợt này.** Đợt này chỉ chạy pytest/npm; CI có **build lại cả hai Docker image** (job `docker`) nhưng **không dựng stack và không chạy e2e**. Các bằng chứng Docker/e2e trước đó vẫn là của lần chạy cùng ngày, đã ghi rõ nguồn.
+- **Chưa kiểm chứng trên PostgreSQL thật của bệnh viện**: suite local của đợt này chạy trên SQLite; CI có chạy toàn bộ suite trên PostgreSQL 16 nhưng đó là service tạm trong CI, không phải instance production thật. Chưa nghiệm thu thiết bị thật (PC kiosk, tablet Android, Android TV box).
+- **Race trạng thái trạm mới được kiểm ở mức logic tuần tự hoá**, không phải dưới tải 50–100 thiết bị thật. Test chứng minh hai lượt ghi của cùng một trạm không chồng nhau và lượt cuối phản ánh đúng sổ phiên; **chưa** đo dưới tải thật của một ca trực.
+- **`_presence_locks` không bao giờ được dọn.** Mỗi mã trạm từng xuất hiện giữ một `asyncio.Lock` trong dict suốt vòng đời tiến trình. Với quy mô 50–100 trạm cố định của hệ thống này, đó là vài chục đối tượng — không đáng kể, và dọn chúng sẽ mở lại đúng khe race vừa bịt. Ghi ra đây để không ai đọc thành "không có rò rỉ nào".
+- **`POST /api/system/outbox/requeue-exhausted` vẫn chưa được thử với một n8n thật đang sống lại** — mới kiểm bằng test tự động (trần số lượng, chọn theo `ids`, trạng thái về `PENDING`, `attempt_count` về 0). Việc n8n khử trùng đúng theo `Idempotency-Key` khi phát lại vẫn chưa có bằng chứng.
+- **`GET /api/health/n8n` là endpoint mới, chưa có mặt trong bất kỳ probe nào.** Nó chưa từng được gọi từ một tiến trình thật ngoài test — nghĩa là chưa có bằng chứng nó trả đúng khi n8n **đang sống** (test hiện chỉ phủ ca n8n tắt và ca n8n không kết nối được).
+- **Ba endpoint health con nay đều yêu cầu token ADMIN** (`/api/health/db`, `/api/health/websocket`, `/api/health/n8n`). Probe hạ tầng không token gọi chúng sẽ nhận 401 — cần rà lại khi triển khai.
+
 ## 2026-10-11 — Sửa 5 phát hiện rà soát (2 P1 + 3 P2) về tính trung thực của trạng thái, health và outbox
 
 Yêu cầu: người dùng dán danh sách 5 phát hiện từ một đợt rà soát (2 P1, 3 P2) và yêu cầu xác minh/sửa. Đã đọc lại code thật cho từng phát hiện trước khi sửa; **cả 5 đều đúng** với code hiện tại. Đối chiếu thêm với `project.md` R11/R14/R15 — đặc tả vốn đã yêu cầu "Health/readiness phản ánh DB/tasks/recovery; n8n degraded không làm core failed", tức code đang thiếu so với chính spec của dự án, không phải phát sinh phạm vi mới.

@@ -532,6 +532,16 @@
             <code>/api/health/db</code> và <code>/api/health/websocket</code> nay <strong>yêu cầu token
             ADMIN</strong> — nếu có probe hạ tầng đang gọi chúng, probe đó sẽ nhận 401.
           </p>
+          <p>
+            <strong>Cập nhật 2026-10-11 (đợt rà soát thứ hai):</strong> <code>/api/health</code> nay
+            <strong>không gọi ra mạng ngoài</strong>. Trường <code>n8n</code> chỉ còn phản ánh
+            <em>cấu hình</em> (<code>enabled</code>/<code>disabled</code>), nên một probe gọi health vài
+            giây một lần không còn chờ tới 1,5 giây vì n8n chậm, và độ trễ của hệ thống phụ không còn
+            quyết định độ trễ phép đo sức khoẻ hệ thống chính. Kiểm tra n8n sống hay không là endpoint
+            riêng <code>GET /api/health/n8n</code> (<strong>token ADMIN</strong>). Bảng giám sát cũng
+            đổi nhãn thẻ N8N cho khớp: <code>ĐÃ BẬT</code>/<code>CHƯA BẬT</code> thay cho một chữ nghe
+            như thể đã kiểm tra kết nối.
+          </p>
         </div>
         <p class="action"><b>Việc cần</b>Chuẩn bị <code>.env</code> production hợp lệ trỏ PostgreSQL thật, rồi chạy <code>docker compose config --quiet</code> → <code>build</code> → <code>up -d</code> → <code>ps</code> → <code>nginx -t</code> → <code>curl /api/health</code> → <code>curl -sI /assets/audio/&lt;tep&gt;.wav</code>.</p>
       </li>

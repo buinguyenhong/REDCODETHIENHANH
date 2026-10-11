@@ -66,41 +66,91 @@ async def get_system_status(
 
 @router.post("/outbox/requeue-exhausted")
 async def requeue_exhausted_notifications(
+    limit: int = Query(
+        50, ge=1, le=200,
+        description="Số thông báo tối đa đưa lại hàng đợi trong một lần gọi.",
+    ),
+    ids: Optional[List[int]] = Query(
+        None,
+        description="Chỉ đưa lại đúng các bản ghi này (theo id). Bỏ trống = lấy theo thứ tự cũ nhất trước.",
+    ),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_active_admin)
 ):
-    """Đưa các thông báo đã cạn lượt thử về hàng đợi. Yêu cầu ADMIN.
+    """Đưa thông báo đã cạn lượt thử về hàng đợi, có giới hạn số lượng. Yêu cầu ADMIN.
 
     Quy tắc khi bật lại n8n: worker chỉ nhặt PENDING/FAILED còn lượt, nên thông báo
     đã cạn lượt sẽ nằm im ở EXHAUSTED vĩnh viễn — đó là chủ ý, không phải bỏ sót.
     Sau khi n8n sống lại, người vận hành quyết định phát lại bằng endpoint này;
     đặt attempt_count về 0 để vòng đời bắt đầu lại từ đầu.
 
+    **Có trần số lượng, và đây là chủ ý.** Một lần gọi không giới hạn sẽ đẩy toàn
+    bộ lịch sử lỗi — có thể hàng nghìn thông báo tích từ nhiều tuần — vào hàng đợi
+    cùng lúc, và n8n sống lại sẽ nhận một đợt dội ngay khi vừa hồi phục. Trần mặc
+    định 50, tối đa 200 mỗi lần. Muốn phát lại nhiều hơn thì gọi lặp: phản hồi luôn
+    nói còn bao nhiêu bản ghi ở lại, để người vận hành biết mình đang ở đâu.
+
+    Truyền ``ids`` để chỉ phát lại đúng những bản ghi đã chọn — dùng khi đã xem
+    ``exhausted_recent`` ở ``GET /api/system/status`` và biết chính xác cái nào cần
+    gửi lại.
+
     Gửi lại là an toàn về mặt trùng lặp: mỗi bản ghi giữ nguyên Idempotency-Key
     ``redcode-outbox-{id}``, nên n8n tự khử trùng nếu thông báo trước đó đã tới.
     """
     now = datetime.now(timezone.utc)
-    result = await db.execute(
-        update(NotificationOutbox)
-        .where(NotificationOutbox.status == OutboxStatus.EXHAUSTED.value)
-        .values(
-            status=OutboxStatus.PENDING.value,
-            attempt_count=0,
-            next_attempt_at=None,
-            locked_at=None,
-        )
+
+    # 1. Chọn đúng các bản ghi sẽ phát lại. Lọc và chốt danh sách trước khi ghi,
+    #    để biết chắc mình đã chạm vào bao nhiêu bản ghi.
+    candidates = select(NotificationOutbox.id).where(
+        NotificationOutbox.status == OutboxStatus.EXHAUSTED.value
     )
-    if result.rowcount:
+    if ids:
+        candidates = candidates.where(NotificationOutbox.id.in_(ids))
+    # Cũ nhất trước: thông báo tồn lâu nhất được gửi lại trước, đúng thứ tự hàng đợi.
+    selected = (await db.execute(
+        candidates.order_by(NotificationOutbox.created_at).limit(limit)
+    )).scalars().all()
+
+    if selected:
+        await db.execute(
+            update(NotificationOutbox)
+            .where(NotificationOutbox.id.in_(selected))
+            .values(
+                status=OutboxStatus.PENDING.value,
+                attempt_count=0,
+                next_attempt_at=None,
+                locked_at=None,
+            )
+        )
         db.add(SystemEvent(
             station_id=None,
             event_type="N8N_OUTBOX_REQUEUED",
             severity="INFO",
-            message=f"{result.rowcount} thông báo đã cạn lượt được đưa lại hàng đợi",
-            event_metadata={"count": result.rowcount, "by_user_id": admin.id},
+            message=f"{len(selected)} thông báo đã cạn lượt được đưa lại hàng đợi",
+            event_metadata={
+                "count": len(selected),
+                "limit": limit,
+                "explicit_ids": bool(ids),
+                "by_user_id": admin.id,
+            },
             created_at=now,
         ))
     await db.commit()
-    return {"requeued": result.rowcount}
+
+    # 2. Còn lại bao nhiêu? Không có con số này thì người vận hành phải đoán xem đã
+    #    phát lại hết chưa.
+    remaining = (await db.execute(
+        select(func.count(NotificationOutbox.id)).where(
+            NotificationOutbox.status == OutboxStatus.EXHAUSTED.value
+        )
+    )).scalar() or 0
+
+    return {
+        "requeued": len(selected),
+        "limit": limit,
+        "remaining_exhausted": remaining,
+        "has_more": remaining > 0,
+    }
 
 @router.get("/events")
 async def list_system_events(

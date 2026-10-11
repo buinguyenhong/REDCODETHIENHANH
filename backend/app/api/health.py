@@ -24,6 +24,15 @@ async def get_health(db: AsyncSession = Depends(get_db)):
     Endpoint này trả các trường tổng hợp: không mã trạm, không thông báo lỗi thô,
     không chuỗi kết nối. Chi tiết chẩn đoán nằm ở ``/api/health/db`` và
     ``/api/health/websocket``, cả hai đều yêu cầu quyền ADMIN.
+
+    Endpoint này **không gọi ra mạng ngoài**. Trước đây khi n8n được bật, mỗi lần
+    đọc health còn chờ tới 1,5 giây để hỏi ``/healthz`` của n8n. Một probe hạ tầng
+    gọi endpoint này vài giây một lần sẽ dồn request vào đó, và tệ hơn: độ trễ của
+    một hệ thống phụ lại quyết định độ trễ của phép đo sức khoẻ hệ thống chính. n8n
+    là đường bổ sung — báo động nội bộ không đi qua nó — nên trạng thái ở đây chỉ
+    phản ánh **cấu hình** (``enabled``/``disabled``). Kiểm tra n8n có sống hay không
+    là việc riêng, ở ``/api/health/n8n`` (ADMIN), và không bao giờ kéo ``status``
+    của REDCODE xuống.
     """
     db_status = "ok"
     try:
@@ -48,16 +57,7 @@ async def get_health(db: AsyncSession = Depends(get_db)):
     else:
         ws_status = "degraded"
 
-    n8n_status = "disabled"
-    # n8n là tích hợp bổ sung. Trạng thái của nó không bao giờ được kéo trạng thái
-    # chung xuống: báo động nội bộ vẫn phải chạy khi n8n chết.
-    if settings.N8N_ENABLED:
-        try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
-                res = await client.get(settings.N8N_WEBHOOK_URL.split("/webhook")[0] + "/healthz")
-                n8n_status = "ok" if res.is_success else "degraded"
-        except Exception:
-            n8n_status = "degraded"
+    n8n_status = "enabled" if settings.N8N_ENABLED else "disabled"
 
     total_stations = 0
     if db_status == "ok":
@@ -112,6 +112,28 @@ async def health_database(
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         logger.error("Health check database thất bại", exc_info=True)
         return {"status": "error", "latency_ms": latency_ms}
+
+@router.get("/n8n")
+async def health_n8n(admin: User = Depends(get_current_active_admin)):
+    """Kiểm tra n8n có sống hay không. Yêu cầu ADMIN.
+
+    Tách khỏi ``/api/health`` vì đây là phép đo **phụ thuộc mạng ngoài**, có thể
+    chậm tới ``N8N_TIMEOUT_SECONDS``. Người vận hành gọi endpoint này khi cần biết
+    vì sao thông báo đang tồn đọng, không phải để quyết định REDCODE còn chạy được
+    hay không. n8n chết không làm trạng thái REDCODE suy giảm.
+    """
+    if not settings.N8N_ENABLED:
+        return {"status": "disabled", "reachable": False, "latency_ms": None}
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            res = await client.get(settings.N8N_WEBHOOK_URL.split("/webhook")[0] + "/healthz")
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        return {"status": "ok" if res.is_success else "degraded", "reachable": res.is_success, "latency_ms": latency_ms}
+    except Exception:
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.warning("Kiểm tra n8n thất bại", exc_info=True)
+        return {"status": "degraded", "reachable": False, "latency_ms": latency_ms}
 
 @router.get("/websocket")
 async def health_websocket(admin: User = Depends(get_current_active_admin)):

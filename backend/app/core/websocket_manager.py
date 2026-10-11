@@ -26,6 +26,10 @@ class ConnectionManager:
         # sát rồi mất" — chỉ vế sau mới là sự cố cần báo động.
         self._monitor_expected: bool = False
         self._lock = asyncio.Lock()
+        # Một lock cho mỗi trạm, dùng để xếp hàng các lượt ghi trạng thái của trạm
+        # đó. Không dùng _lock cho việc này: _lock bảo vệ sổ trong bộ nhớ và không
+        # được giữ qua I/O mạng/database. Xem _presence_lock().
+        self._presence_locks: Dict[str, asyncio.Lock] = {}
 
     async def start_monitor(self, offline_threshold_seconds: int = 15):
         self._monitor_expected = True
@@ -72,16 +76,48 @@ class ConnectionManager:
             except Exception:
                 logger.debug("Không đóng được socket cũ của trạm %s", station_code, exc_info=True)
 
-        # Mark station online in DB & log system event
-        await self._update_station_db_status(station_code, True)
+        # Ghi trạng thái theo SỰ THẬT trong sổ phiên tại thời điểm ghi, rồi phát đi
+        # đúng sự thật vừa ghi. Nếu trong lúc chờ lock mà phiên này đã bị thay (thiết
+        # bị rớt rồi nối lại), giá trị trả về là trạng thái mới nhất — không phải
+        # trạng thái ta định đặt — nên dashboard không bao giờ nhận một thông điệp
+        # ONLINE cũ cho một trạm đã offline.
+        connected = await self._sync_station_db_status(station_code, event="DEVICE_CONNECTED")
+        await self._broadcast_station_status(station_code, connected)
+        logger.info(f"Station connected: {station_code}")
+
+    async def _broadcast_station_status(self, station_code: str, connected: bool):
+        """Phát trạng thái trạm cho dashboard, luôn kèm đúng giá trị đã ghi vào DB.
+
+        Tách riêng để ba đường dẫn cùng ghi trạng thái (kết nối, ngắt, cắt do quá
+        hạn) không tự dựng thông điệp riêng và lệch nhau.
+        """
         await self.broadcast_to_dashboards({
             "type": "STATION_STATUS",
             "station_code": station_code,
-            "status": StationStatus.ONLINE.value,
-            "websocket_connected": True,
+            "status": StationStatus.ONLINE.value if connected else StationStatus.OFFLINE.value,
+            "websocket_connected": connected,
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        logger.info(f"Station connected: {station_code}")
+
+    async def _finalize_disconnect(self, station_code: str):
+        """Hoàn tất việc một trạm rời sổ phiên: ghi DB, phát trạng thái, ghi log.
+
+        Dùng chung cho hai đường dẫn cùng kết cục: handler ngắt kết nối và vòng
+        giám sát nhịp tim cắt trạm quá hạn. Cả hai đã rút trạm khỏi ``active_stations``
+        trước khi gọi hàm này, nên ``_sync_station_db_status`` thường suy ra OFFLINE.
+
+        Ngoại lệ đáng lưu tâm: nếu một phiên mới đã kế chỗ trong lúc ta xử lý, sự
+        thật là trạm ĐANG online. Khi đó hàm này không phát OFFLINE — phát OFFLINE cho
+        một thiết bị vừa nối lại sẽ tắt đèn báo động của đúng khoa đang trực.
+        """
+        still_connected = await self._sync_station_db_status(station_code, event="DEVICE_DISCONNECTED")
+        if still_connected:
+            logger.info(
+                f"Station {station_code}: phiên cũ rời đi nhưng một phiên mới đã kế chỗ; giữ nguyên ONLINE"
+            )
+            return
+        await self._broadcast_station_status(station_code, False)
+        logger.info(f"Station disconnected: {station_code}")
 
     async def connect_dashboard(self, websocket: WebSocket):
         await websocket.accept()
@@ -113,15 +149,10 @@ class ConnectionManager:
             if station_code in self.last_heartbeats:
                 del self.last_heartbeats[station_code]
 
-        await self._update_station_db_status(station_code, False)
-        await self.broadcast_to_dashboards({
-            "type": "STATION_STATUS",
-            "station_code": station_code,
-            "status": StationStatus.OFFLINE.value,
-            "websocket_connected": False,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        logger.info(f"Station disconnected: {station_code}")
+        # Ghi theo SỰ THẬT hiện tại, không theo ý định "tôi vừa ngắt". Nếu một phiên
+        # mới đã kế chỗ trong lúc hàm này chạy, sự thật là trạm ĐANG online và bản
+        # ghi phải nói đúng như vậy.
+        await self._finalize_disconnect(station_code)
 
     async def disconnect_dashboard(self, websocket: WebSocket):
         async with self._lock:
@@ -160,24 +191,16 @@ class ConnectionManager:
             # nói dối "ONLINE" mà endpoint vừa sửa. last_seen_at đã do endpoint ghi.
             return
 
-        async with AsyncSessionLocal() as session:
-            try:
-                stmt = (
-                    update(Station)
-                    .where(Station.station_code == station_code)
-                    .values(
-                        last_seen_at=now,
-                        websocket_connected=True,
-                        audio_ready=audio_ready,
-                        client_ready=client_ready,
-                        status=StationStatus.ONLINE.value,
-                        updated_at=now
-                    )
-                )
-                await session.execute(stmt)
-                await session.commit()
-            except Exception as e:
-                logger.error(f"Error updating heartbeat in DB for {station_code}: {e}")
+        # Lượt ghi này dùng chung đường ghi trạng thái với connect/disconnect, nên nó
+        # xếp hàng sau các lượt ghi khác của cùng trạm và tự suy lại sự thật ngay
+        # trước khi ghi: nếu phiên đã kết thúc trong lúc chờ, lượt ghi OFFLINE của
+        # phiên đó mới là lượt cuối, và một lượt ghi ONLINE ở đây sẽ dựng lại đúng
+        # trạng thái sai mà phát hiện P1 mô tả.
+        await self._sync_station_db_status(
+            station_code,
+            readiness={"audio_ready": audio_ready, "client_ready": client_ready},
+            seen_at=now,
+        )
 
     async def broadcast_alarm(self, alarm_data: dict, target_station_codes: Optional[List[str]] = None):
         """
@@ -275,16 +298,80 @@ class ConnectionManager:
             await self.disconnect_station(station_code, ws)
             return False
 
-    async def _update_station_db_status(self, station_code: str, connected: bool):
+    def _presence_lock(self, station_code: str) -> asyncio.Lock:
+        """Lock tuần tự hoá các lượt ghi trạng thái hiện diện của MỘT trạm.
+
+        Lock chính ``_lock`` chỉ bảo vệ sổ trong bộ nhớ; nó không thể bảo vệ thứ tự
+        hoàn thành của hai giao dịch database, vì mỗi lượt ghi mở phiên riêng và
+        ``commit`` là I/O. Khi lock chính đã được thả, hai lượt ghi connect/disconnect
+        chạy song song và lượt nào commit sau sẽ thắng — bất kể lượt đó cũ hay mới.
+
+        Vì vậy mỗi trạm có thêm một lock riêng, chỉ dùng để xếp hàng các lượt ghi
+        trạng thái. Không phải lock toàn cục: nhịp tim của 100 trạm ghi vài giây một
+        lần, dùng chung một lock sẽ khiến mọi trạm xếp hàng sau nhau vô ích.
+        """
+        lock = self._presence_locks.get(station_code)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._presence_locks[station_code] = lock
+        return lock
+
+    async def _sync_station_db_status(
+        self,
+        station_code: str,
+        event: Optional[str] = None,
+        readiness: Optional[Dict[str, bool]] = None,
+        seen_at: Optional[datetime] = None,
+    ) -> bool:
+        """Ghi trạng thái hiện diện của trạm theo SỰ THẬT hiện tại trong bộ nhớ.
+
+        Đây là điểm sửa cho phát hiện P1 "race khi cập nhật ONLINE/OFFLINE". Trước
+        đây mỗi lời gọi tự khai trạng thái của mình: ``connect_station`` ghi ONLINE,
+        ``disconnect_station`` ghi OFFLINE. Hai lượt ghi không được tuần tự hoá, nên
+        một phiên cũ có thể commit OFFLINE *sau* khi phiên mới đã commit ONLINE, và
+        database báo OFFLINE trong khi socket mới đang hoạt động — đúng lời nói dối
+        nguy hiểm nhất với hệ thống này, vì bảng giám sát sẽ hiện một khoa đã tắt
+        báo động trong khi khoa đó đang nhận báo động bình thường.
+
+        Cách sửa: không ghi "trạng thái tôi định đặt" mà ghi "trạng thái đang đúng
+        lúc này", và tuần tự hoá theo từng trạm. Lượt ghi cuối cùng luôn là lượt đọc
+        sự thật muộn nhất, nên database hội tụ về đúng trạng thái của bộ nhớ bất kể
+        thứ tự hoàn thành của các giao dịch.
+
+        ``event`` là hành động của phiên (``DEVICE_CONNECTED``/``DEVICE_DISCONNECTED``)
+        để ghi audit — nhưng chỉ ghi khi hành động đó khớp với trạng thái suy ra được.
+        Một lượt ngắt bị một phiên mới kế chỗ không phải là "trạm mất kết nối", và
+        ghi audit như vậy sẽ khiến người đọc log tưởng một khoa vừa rơi khỏi hệ thống.
+
+        Trả về sự thật vừa đọc, để lời gọi broadcast đi cùng một sự thật với bản ghi
+        database — nếu không, dashboard lại nhận một thông điệp OFFLINE cũ.
+        """
+        async with self._presence_lock(station_code):
+            async with self._lock:
+                connected = station_code in self.active_stations
+            await self._update_station_db_status(station_code, connected, event, readiness, seen_at)
+            return connected
+
+    async def _update_station_db_status(
+        self,
+        station_code: str,
+        connected: bool,
+        event: Optional[str] = None,
+        readiness: Optional[Dict[str, bool]] = None,
+        seen_at: Optional[datetime] = None,
+    ):
         now = datetime.now(timezone.utc)
         status = StationStatus.ONLINE.value if connected else StationStatus.OFFLINE.value
+        # Audit chỉ ghi khi hành động của phiên khớp với trạng thái thật sự đã ghi.
+        matched_event = "DEVICE_CONNECTED" if connected else "DEVICE_DISCONNECTED"
+        event_type = event if event == matched_event else None
         async with AsyncSessionLocal() as session:
             try:
                 # Update station
                 values = {
                     "websocket_connected": connected,
                     "status": status,
-                    "last_seen_at": now,
+                    "last_seen_at": seen_at or now,
                     "updated_at": now,
                 }
                 if not connected:
@@ -293,27 +380,29 @@ class ConnectionManager:
                     # trạm đã offline nhiều ngày — đúng loại tuyên bố sai cần tránh.
                     values["audio_ready"] = False
                     values["client_ready"] = False
+                elif readiness is not None:
+                    # Cờ sẵn sàng chỉ được ghi kèm một nhịp tim của phiên đang sống.
+                    values["audio_ready"] = bool(readiness.get("audio_ready", False))
+                    values["client_ready"] = bool(readiness.get("client_ready", True))
                 stmt = update(Station).where(Station.station_code == station_code).values(**values)
-                res = await session.execute(stmt)
+                await session.execute(stmt)
 
-                # Log system event
-                event_type = "DEVICE_CONNECTED" if connected else "DEVICE_DISCONNECTED"
-                station_id = (await session.execute(select(Station.id).where(Station.station_code == station_code))).scalar_one_or_none()
-                sys_event = SystemEvent(
-                    station_id=station_id,
-                    event_type=event_type,
-                    severity="INFO" if connected else "WARNING",
-                    message=f"Station {station_code} {'connected' if connected else 'disconnected'}",
-                    event_metadata={"station_code": station_code, "status": status},
-                    created_at=now
-                )
-                session.add(sys_event)
+                if event_type is not None:
+                    station_id = (await session.execute(select(Station.id).where(Station.station_code == station_code))).scalar_one_or_none()
+                    session.add(SystemEvent(
+                        station_id=station_id,
+                        event_type=event_type,
+                        severity="INFO" if connected else "WARNING",
+                        message=f"Station {station_code} {'connected' if connected else 'disconnected'}",
+                        event_metadata={"station_code": station_code, "status": status},
+                        created_at=now
+                    ))
                 await session.commit()
             except Exception as e:
                 logger.error(f"Error updating station status in DB for {station_code}: {e}")
 
     async def _enforce_timeouts(self, timed_out: List[tuple], threshold_seconds: int):
-        """Ngắt các trạm quá hạn, kiểm tra lại trạng thái ngay trước khi ngắt.
+        """Ngắt các trạm quá hạn: quyết định và thi hành trong CÙNG một bước nguyên tử.
 
         ``timed_out`` là một **ảnh chụp** tại thời điểm quét. Giữa lúc chụp và lúc
         ngắt, một nhịp tim mới có thể đã tới — hoặc trạm đã kết nối lại bằng socket
@@ -321,6 +410,18 @@ class ConnectionManager:
         và vì WebSocket là kênh nhận báo động duy nhất, trạm đó im lặng cho tới khi
         client tự kết nối lại. Vì vậy phải kiểm lại **cả danh tính socket lẫn mốc
         nhịp tim mới nhất** dưới lock trước khi quyết định.
+
+        Kiểm lại là chưa đủ: nếu chỉ kiểm rồi thả lock để đóng socket, vẫn còn một
+        khe giữa "đã kiểm xong" và "đã đóng" mà một nhịp tim hợp lệ lọt vào, làm
+        trạng thái nhảy về ONLINE trong khi phiên đang bị ngắt. Nên ở đây quyết định
+        và thi hành nằm chung một khối lock: ngay khi biết chắc phải ngắt, **rút
+        phiên ra khỏi sổ trong cùng khối đó**. Từ thời điểm ấy, ``update_heartbeat``
+        và ``touch_station`` đều từ chối trạm không còn socket, nên nhịp tim tới muộn
+        không thể làm sống lại phiên đã bị kết luận là quá hạn — trạng thái và socket
+        không còn cơ hội mâu thuẫn với nhau.
+
+        Việc đóng socket (network I/O, có thể treo với kết nối half-open) vẫn nằm
+        NGOÀI lock, đúng như yêu cầu: không giữ lock qua I/O mạng.
         """
         for code, ws in timed_out:
             async with self._lock:
@@ -333,13 +434,23 @@ class ConnectionManager:
                 # Nhịp tim mới hơn ngưỡng nghĩa là trạm vẫn khoẻ — bỏ qua.
                 if (datetime.now(timezone.utc) - last_seen).total_seconds() <= threshold_seconds:
                     continue
+                # Chốt quyết định bằng cách rút phiên khỏi sổ ngay tại đây. Không có
+                # bước await nào giữa lần kiểm cuối và lần rút này, nên không còn khe
+                # để nhịp tim chen vào.
+                del self.active_stations[code]
+                self.last_heartbeats.pop(code, None)
 
             logger.warning(f"Station {code} timed out ({threshold_seconds}s with no heartbeat). Marking offline.")
             try:
                 await ws.close(code=1011, reason='Heartbeat timeout')
             except Exception:
                 pass
-            await self.disconnect_station(code, ws)
+
+            # Phiên đã bị rút khỏi sổ nên handler của socket này gọi
+            # disconnect_station(code, ws) sẽ bị guard danh tính từ chối và không ghi
+            # gì thêm — hai lượt ghi trùng lặp sẽ nhấp nháy dashboard. Vì vậy chính
+            # chỗ này hoàn tất chuyển trạng thái.
+            await self._finalize_disconnect(code)
 
     async def _check_timeouts(self, threshold_seconds: int):
         while True:

@@ -186,7 +186,13 @@ Trên DB test, tạo records có server timestamps quy đổi từ giờ bệnh 
 
 Fresh test PostgreSQL `alembic upgrade head` → login/provision/trigger/dismiss/report. Upgrade bản sao DB release cũ giữ counts/history/permissions; normalized explicit deny không bị legacy JSON override; invalid JSON IDs không mở quyền. Kiểm tra Alembic current/schema/unique idempotency/PostgreSQL sequence, concurrent retry một alarm. Production startup không tự create_all. Scan Nginx/Uvicorn/upstream proxy logs: không JWT/device credentials/password thật. Không chạy downgrade giả; rollback thử bằng backup.
 
-Kiểm tra bề mặt health: `/api/health` công khai trả `status`/`liveness`/`database`/`websocket`/`n8n`/`active_stations`/`total_stations` và **không** có mã trạm hay thông báo lỗi thô; `/api/health/db` và `/api/health/websocket` trả **401** khi không có token, **403** với tài khoản OPERATOR, **200** với ADMIN. Dừng vòng giám sát nhịp tim (kill task trong test, không phải trên production đang chạy): `/api/health` phải trả `websocket: degraded` **và** `status: degraded` trong khi `liveness` vẫn `ok`.
+Kiểm tra bề mặt health: `/api/health` công khai trả `status`/`liveness`/`database`/`websocket`/`n8n`/`active_stations`/`total_stations` và **không** có mã trạm hay thông báo lỗi thô; `/api/health/db`, `/api/health/websocket` và `/api/health/n8n` trả **401** khi không có token, **403** với tài khoản OPERATOR, **200** với ADMIN. Dừng vòng giám sát nhịp tim (kill task trong test, không phải trên production đang chạy): `/api/health` phải trả `websocket: degraded` **và** `status: degraded` trong khi `liveness` vẫn `ok`.
+
+`/api/health` **không được gọi ra mạng ngoài**: bật `N8N_ENABLED=true` với URL trỏ vào cổng không có gì lắng nghe, rồi gọi health — phải trả về nhanh (không chờ tới `N8N_TIMEOUT_SECONDS`), và trường `n8n` phải là `enabled` (cấu hình), không phải kết quả kết nối. Đo n8n có sống là việc của `/api/health/n8n` (ADMIN), trả `status`/`reachable`/`latency_ms`.
+
+Trạng thái trạm: hai lượt ghi ONLINE/OFFLINE của **cùng một trạm** phải tuần tự hoá và lượt ghi cuối phải phản ánh đúng sổ phiên, không phải ý định của phiên gọi nó. Kiểm bằng cách cho một lượt ngắt chậm (phiên cũ) chồng lên một lượt kết nối nhanh (phiên mới): database phải kết thúc ở `ONLINE`, và **không** được có bản ghi audit `DEVICE_DISCONNECTED` cho trạm đó. Vòng giám sát nhịp tim phải rút phiên khỏi sổ **trước khi** gọi `ws.close()` — tại thời điểm `close()` chạy, `touch_station()` và `update_heartbeat()` cho mã đó phải bị từ chối.
+
+Phát lại outbox: `POST /api/system/outbox/requeue-exhausted` phải có trần (`?limit=`, mặc định 50, tối đa 200 — vượt trần là 422), chọn được theo `?ids=`, và phản hồi phải trả `remaining_exhausted`/`has_more`.
 
 ### T13 — PC/Android unattended
 

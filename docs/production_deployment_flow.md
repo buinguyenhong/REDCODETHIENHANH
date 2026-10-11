@@ -309,8 +309,8 @@ Không chạy migration song song với API đang phục vụ trong quy trình n
 | Startup/502 | Trước cấu hình nghiệp vụ | Backend logs, revision, proxy/DNS | Health + UI + API qua Nginx đạt |
 | Health `websocket: degraded` | Trước cấu hình nghiệp vụ | Log backend, vòng monitor nhịp tim | Restart backend và health trả `status: ok`; coi mọi ONLINE hiện tại là không đáng tin |
 | Health `websocket: not_started` đứng yên | Trước cấu hình nghiệp vụ | Log backend có `Station offline monitor active` chưa | Restart backend; nếu vẫn vậy thì lifespan không chạy hết |
-| `/api/health/db` hoặc `/health/websocket` trả 401/403 | Khi dựng probe hạ tầng | Token ADMIN | Cấp token ADMIN cho probe, hoặc chỉ đọc `/api/health` công khai |
-| n8n có thông báo bỏ hẳn | Khi bật lại n8n | `GET /api/system/status` → `notification_outbox.exhausted` | Xem `exhausted_recent`, rồi `POST /api/system/outbox/requeue-exhausted` khi n8n đã sống lại |
+| `/api/health/db`, `/health/websocket` hoặc `/health/n8n` trả 401/403 | Khi dựng probe hạ tầng | Token ADMIN | Cấp token ADMIN cho probe, hoặc chỉ đọc `/api/health` công khai |
+| n8n có thông báo bỏ hẳn | Khi bật lại n8n | `GET /api/system/status` → `notification_outbox.exhausted`; `GET /api/health/n8n` xác nhận n8n đã sống | Xem `exhausted_recent`, rồi `POST /api/system/outbox/requeue-exhausted` (có `?limit=`, mặc định 50) khi n8n đã sống lại; đọc `remaining_exhausted`/`has_more` để biết còn lại bao nhiêu |
 | Audio sai Content-Type | Trước nghiệm thu trạm | `curl -sI` asset, config Nginx | Asset trả đúng kiểu media |
 | Trạm không kết nối | Trước nghiệm thu trạm | Origin/profile, enabled/token rotation, WS Upgrade, mã đóng `1008`/`4001` | ONLINE và PING/PONG đúng |
 | Không nghe loa | Không đóng audio acceptance | Asset/autoplay/volume/mute/cáp loa | Nghe thực và retry/lifecycle đúng |
