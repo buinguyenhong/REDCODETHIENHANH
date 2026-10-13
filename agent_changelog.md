@@ -39,6 +39,15 @@ DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_n8n.db" \
 # → YAML OK / ['redcode_net'] ['redcode_net']
 ```
 
+### Bằng chứng CI
+
+- Commit `acae229`, push `main` (`25f9c36..acae229`). Truy vấn GitHub API: run **`38361593942`** (run_number 18), head_sha `acae229`, event `push`, branch `main`, tạo `2026-10-13T07:16:08Z`, `status: completed`, `conclusion: success`. Đối chiếu **từng bước** — cả ba job success, **không bước nào bị skip**:
+  - `frontend` (9 bước): `npm ci` / `npm test` / `npm run build` đều success.
+  - `backend` (12 bước): `Initialize containers` (service PostgreSQL 16), `Create live transport database`, `alembic upgrade head`, `pytest tests -v` đều success.
+  - `docker` (6 bước): build `backend/Dockerfile` và `nginx/Dockerfile` đều success. Lưu ý job này chỉ **build** image, không dựng stack — nên nó không xác nhận backend phân giải được hostname `n8n`.
+  - Run URL: <https://github.com/buinguyenhong/REDCODETHIENHANH/actions/runs/38361593942>
+- **Không đọc được số test cụ thể trong log job backend**: endpoint log của GitHub API trả **403** vì phiên này chưa xác thực GitHub. Bước `pytest tests -v` success là bằng chứng đã có; con số test trong CI để trống thay vì suy đoán. Con số **81 passed** là của lần chạy local trên SQLite ở mục trên, không phải số của CI.
+
 ### Giới hạn
 
 - **Chưa gọi thử tới n8n thật** — theo yêu cầu "tạm thời bỏ qua chưa cần test n8n". Đợt này chỉ chốt cấu hình; chưa có bằng chứng backend phân giải được hostname `n8n`, chưa xác nhận Webhook node trong workflow n8n dùng đúng path `/webhook/redcode`, và chưa xác nhận payload tới được n8n.
