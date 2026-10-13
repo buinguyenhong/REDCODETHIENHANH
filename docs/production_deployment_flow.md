@@ -9,7 +9,7 @@ Tài liệu dành cho người trực tiếp triển khai tại bệnh viện. T
 
 ## 0. Ba điều phải biết trước khi bắt đầu
 
-**Cấu hình chỉ bằng `.env`.** IT chuẩn bị PostgreSQL/network/user trước, rồi khai báo `DATABASE_URL` (và `N8N_ENABLED`/`N8N_WEBHOOK_URL` nếu dùng n8n) trong `.env`. Container launcher chạy `alembic upgrade head` rồi khởi động API; thiếu `DATABASE_URL` ở production thì dừng ngay lúc khởi động. Không còn wizard thiết lập database, không còn `/admin/settings` cho n8n.
+**Cấu hình chỉ bằng `.env`.** IT chuẩn bị PostgreSQL/network/user trước, rồi khai báo `DATABASE_URL` (và `N8N_ENABLED`/`N8N_WEBHOOK_URL` nếu dùng n8n) trong `.env`. URL n8n mặc định là `http://n8n:5678/webhook/redcode`: hostname `n8n` chỉ phân giải được khi backend cùng Docker network với container n8n, và path phải khớp path của Webhook node trong workflow n8n. Container launcher chạy `alembic upgrade head` rồi khởi động API; thiếu `DATABASE_URL` ở production thì dừng ngay lúc khởi động. Không còn wizard thiết lập database, không còn `/admin/settings` cho n8n.
 
 **Trạng thái trạm nay chỉ nói điều chứng minh được.** Một trạm chỉ `ONLINE`/`AUDIO READY` khi có kênh WebSocket thật. Sau khi khởi động lại máy chủ, toàn bộ cờ cũ bị xóa và mọi trạm hiện `OFFLINE` cho tới khi kết nối lại — đây là hành vi đúng. Trong cửa sổ triển khai/upgrade phải có người xác nhận từng máy trở lại ONLINE.
 

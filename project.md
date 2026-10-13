@@ -1096,11 +1096,16 @@ Coding agent có thể điều chỉnh endpoint naming nhưng không được ph
 
 Redcode server gọi một webhook riêng cho Redcode.
 
-Ví dụ:
+URL:
 
 ```text
-POST /webhook/redcode/alarm
+http://n8n:5678/webhook/redcode
 ```
+
+`n8n` là hostname của container n8n trên Docker network mà backend cùng tham gia
+(không phải `localhost` — trong container, `localhost` là chính backend). Path
+`/webhook/redcode` phải khớp path của Webhook node trong workflow n8n; lệch path
+trả 404 và 404 bị tính là một lần gửi thất bại.
 
 Payload:
 

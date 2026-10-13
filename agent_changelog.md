@@ -6,6 +6,45 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-13 — Chốt URL webhook n8n thành `http://n8n:5678/webhook/redcode`
+
+Yêu cầu: "tạm thời bỏ qua chưa cần test n8n, định hướng: khi có sự kiện cần thông báo, call tới url `http://n8n:5678/webhook/redcode` để gửi thông tin".
+
+Đợt này **chỉ đổi cấu hình và tài liệu**, không đổi logic: code đã đọc `settings.N8N_WEBHOOK_URL` sẵn và gửi payload thật từ trước, nên chỉ cần chốt giá trị URL. Không đổi schema, không migration, không thêm dependency.
+
+### Thay đổi
+
+- **`backend/app/config.py`** — giá trị mặc định của `N8N_WEBHOOK_URL` đổi từ `http://localhost:5678/webhook/redcode/alarm` sang `http://n8n:5678/webhook/redcode`. Kèm chú thích nêu hai điều dễ sai: `localhost` trong container là chính backend (không phải n8n), và path phải khớp path của Webhook node trong workflow n8n — lệch path trả 404, mà 404 bị tính là một lần gửi thất bại nên thông báo sẽ retry rồi cạn lượt trong im lặng.
+- **`.env.example`** — `N8N_WEBHOOK_URL` từ để trống thành `http://n8n:5678/webhook/redcode`, kèm chú thích về hostname container và network.
+- **`.env`** (không commit — gitignore) — cập nhật cùng giá trị để môi trường dev khớp tài liệu.
+- **`docker-compose.yml`** — thêm khối chú thích giải thích backend phải phân giải được hostname `n8n`, tức phải cùng Docker network với container n8n; thêm mẫu `n8n_network` (external) ở cuối file cạnh mẫu PostgreSQL đã có. Vẫn **không tạo container n8n** và **không tạo container PostgreSQL mới** — chỉ là chỗ để IT khai báo network có sẵn.
+- **`project.md`** §27 — URL chốt thành `http://n8n:5678/webhook/redcode`, nêu rõ `n8n` là hostname container trên Docker network, không phải `localhost`, và path phải khớp Webhook node.
+- **`README.md`**, **`docs/production_deployment.md`**, **`docs/production_deployment_flow.md`** — thay mọi ví dụ `<n8n-host>`/`<integration-host>` và path `/webhook/redcode/alarm` bằng giá trị thật; bổ sung cảnh báo lỗi DNS khi backend không cùng network, và cách tách hai nguyên nhân rất khác nhau của "n8n degraded": **sai cấu hình/mạng** (không phân giải được `n8n`, hoặc lệch path nên 404) so với **n8n chết thật** — dùng `GET /api/health/n8n` để phân biệt.
+
+Đã grep toàn repo xác nhận không còn tham chiếu nào tới path cũ `/webhook/redcode/alarm` hay placeholder `<n8n-host>`/`<integration-host>`.
+
+### Bằng chứng thực chạy
+
+```bash
+cd backend
+../venv/Scripts/python.exe -c "from app.config import settings; print(settings.N8N_WEBHOOK_URL)"
+# → http://n8n:5678/webhook/redcode
+
+DATABASE_URL="sqlite+aiosqlite:///$TEMP/rc_n8n.db" \
+  ../venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+# → 81 passed, 4 warnings in 69.45s
+
+# Cú pháp Compose
+./venv/Scripts/python.exe -c "import yaml; d=yaml.safe_load(open('docker-compose.yml',encoding='utf-8')); print(d['services']['backend']['networks'], list(d['networks'].keys()))"
+# → YAML OK / ['redcode_net'] ['redcode_net']
+```
+
+### Giới hạn
+
+- **Chưa gọi thử tới n8n thật** — theo yêu cầu "tạm thời bỏ qua chưa cần test n8n". Đợt này chỉ chốt cấu hình; chưa có bằng chứng backend phân giải được hostname `n8n`, chưa xác nhận Webhook node trong workflow n8n dùng đúng path `/webhook/redcode`, và chưa xác nhận payload tới được n8n.
+- **Chưa dựng stack Docker** trong đợt này (Docker Desktop hiện không chạy: `docker ps` lỗi `dockerDesktopLinuxEngine` không tồn tại), nên `docker compose config` chưa chạy — chỉ kiểm cú pháp YAML bằng `yaml.safe_load`.
+- **`n8n_network` mới chỉ là mẫu comment**, chưa bật. Muốn backend gọi được `http://n8n:5678` thì còn một bước thủ công: bật network đó trong Compose và điền đúng tên network thật chứa n8n.
+
 ## 2026-10-11 — Sửa 4 phát hiện rà soát đợt hai (2 P1 + 2 P2) về race trạng thái trạm, ngắt do quá hạn, outbox và health
 
 Yêu cầu: người dùng dán danh sách 4 phát hiện từ đợt rà soát thứ hai (2 P1, 2 P2) và yêu cầu xác minh/sửa. Đã đọc lại code thật cho từng phát hiện trước khi sửa; **cả 4 đều đúng** với code hiện tại.

@@ -85,7 +85,9 @@ networks:
     name: <network-thuc-te-cua-postgresql>
 ```
 
-Đây là đoạn chỉnh sửa vào file có sẵn, không thay cả Compose. PostgreSQL phải thuộc network đó; `DATABASE_URL` dùng hostname/alias của PostgreSQL trên network, **không dùng localhost** trong backend container. n8n ở network khác cần hostname LAN reachable hoặc network attachment phù hợp.
+Đây là đoạn chỉnh sửa vào file có sẵn, không thay cả Compose. PostgreSQL phải thuộc network đó; `DATABASE_URL` dùng hostname/alias của PostgreSQL trên network, **không dùng localhost** trong backend container.
+
+n8n cũng vậy: URL mặc định là `http://n8n:5678/webhook/redcode`, hostname `n8n` chỉ phân giải được bên trong Docker network chứa container n8n. Nếu n8n do IT dựng riêng, bật network đó ở khối `networks` của service `backend` và khai báo `external: true` ở cuối file. Bật `N8N_ENABLED=true` mà backend không phân giải được `n8n` thì mọi thông báo lỗi DNS, retry rồi cạn lượt (`EXHAUSTED`) — **báo động nội bộ vẫn chạy bình thường**, nhưng cần kiểm bằng `GET /api/health/n8n` trước khi coi tích hợp là đã chạy.
 
 ```bash
 docker network inspect <network-thuc-te-cua-postgresql>
@@ -111,7 +113,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES=1440
 HEARTBEAT_INTERVAL_SECONDS=5
 STATION_OFFLINE_THRESHOLD_SECONDS=15
 N8N_ENABLED=true
-N8N_WEBHOOK_URL=http://<integration-host>:5678/webhook/redcode/alarm
+N8N_WEBHOOK_URL=http://n8n:5678/webhook/redcode
 N8N_TIMEOUT_SECONDS=4
 N8N_MAX_RETRIES=3
 ALLOWED_ORIGINS=https://redcode.<internal-domain>
@@ -297,7 +299,7 @@ Migration forward-only; **không** `alembic downgrade` hoặc xóa bảng. Khi c
 | Visual có, audio lỗi | `curl -sI` kiểm tra `Content-Type` của asset; browser error/autoplay, volume/mute/loa; thực hiện retry trên trạm |
 | Audio upload 413 | Nginx body 20M tính cả multipart; giảm file size |
 | Không tạo được alarm type | `audio_sequence` rỗng bị từ chối 422 — mỗi loại báo động phải có ít nhất một tệp âm thanh |
-| n8n degraded | Core tiếp tục; xem webhook/network/attempt/backoff; workflow dedup; không xóa outbox |
+| n8n degraded | Core tiếp tục; xem webhook/network/attempt/backoff; workflow dedup; không xóa outbox. Trước tiên gọi `GET /api/health/n8n` (token ADMIN) để tách hai nguyên nhân rất khác nhau: **sai cấu hình/mạng** (backend không phân giải được `n8n`, hoặc path lệch với Webhook node nên trả 404) và **n8n chết thật** |
 | Report lệch ngày | Filter theo hospital local day, thời gian DB UTC, NTP/timezone; interval [start,next day) |
 
 ## 12. Bàn giao vận hành

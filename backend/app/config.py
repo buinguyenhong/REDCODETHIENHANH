@@ -14,7 +14,12 @@ class Settings(BaseSettings):
     HEARTBEAT_INTERVAL_SECONDS: int = 5
     STATION_OFFLINE_THRESHOLD_SECONDS: int = 15
 
-    N8N_WEBHOOK_URL: str = "http://localhost:5678/webhook/redcode/alarm"
+    # URL webhook của n8n. Hostname `n8n` là tên service/container trên Docker
+    # network mà backend cùng tham gia — không phải localhost (trong container,
+    # localhost là chính backend). Đổi path ở đây thì phải đổi path của Webhook
+    # node trong workflow n8n cho khớp: lệch path trả 404, và 404 bị tính là một
+    # lần gửi thất bại nên thông báo sẽ retry rồi cạn lượt (EXHAUSTED) trong im lặng.
+    N8N_WEBHOOK_URL: str = "http://n8n:5678/webhook/redcode"
     N8N_ENABLED: bool = False
     N8N_TIMEOUT_SECONDS: int = 4
     N8N_MAX_RETRIES: int = 3

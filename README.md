@@ -62,7 +62,7 @@ DATABASE_URL=postgresql+asyncpg://<user>:<password>@<postgres-host>:5432/<databa
 SECRET_KEY=<secret-ngau-nhien-rieng-toi-thieu-32-ky-tu>
 ALLOWED_ORIGINS=http://192.168.1.100
 N8N_ENABLED=true
-N8N_WEBHOOK_URL=http://<n8n-host>:5678/webhook/redcode/alarm
+N8N_WEBHOOK_URL=http://n8n:5678/webhook/redcode
 N8N_TIMEOUT_SECONDS=4
 N8N_MAX_RETRIES=3
 ```
@@ -73,7 +73,7 @@ Fresh install cần `INITIAL_ADMIN_PASSWORD` để bootstrap Admin. Production k
 
 Trong `docker-compose.yml`, bật `existing_postgres_network` ở networks của backend và khai báo external network phía cuối file với tên network PostgreSQL hiện có. `DATABASE_URL` phải dùng hostname/container alias truy cập được trên network đó. Compose không tạo PostgreSQL container mới.
 
-Nếu dùng n8n qua hostname container, backend cũng phải truy cập được network tương ứng; có thể dùng địa chỉ LAN phù hợp.
+`N8N_WEBHOOK_URL` mặc định là `http://n8n:5678/webhook/redcode` — hostname `n8n` chỉ phân giải được khi backend cùng Docker network với container n8n. Nếu n8n do IT dựng riêng, bật network tương ứng trong `docker-compose.yml` (xem mục networks ở cuối file); nếu không, mọi thông báo sẽ lỗi DNS, retry rồi cạn lượt (`EXHAUSTED`) trong khi báo động nội bộ vẫn chạy bình thường. Path `/webhook/redcode` phải khớp path của Webhook node trong workflow n8n — lệch path trả 404 và cũng bị tính là gửi thất bại.
 
 ### 3. Build và khởi chạy
 
