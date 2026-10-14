@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import {
+  normalizeAudioSequence,
+  parseAudioSequenceText,
+  formatAudioSequenceText,
+  addAudioPath,
+  removeAudioPathAt,
+} from '../utils/alarmTypeAudio';
+import {
   Activity,
   Server,
   Database,
@@ -50,7 +57,13 @@ export default function AdminDashboard() {
     priority: 1,
     display_color: '#dc2626',
     receiver_group_id: '',
-    audio_file_path: '',
+    // Chuỗi âm thanh giữ dưới dạng MẢNG có thứ tự, không phải chuỗi nối bằng
+    // xuống dòng. Trước đây ô văn bản và ô chọn tệp cùng ghi vào một trường
+    // ``audio_file_path`` kiểu chuỗi: chọn một tệp ở ô select ghi đè toàn bộ nội
+    // dung vừa gõ, còn gõ nhiều dòng thì ô select không hiện gì và trình duyệt
+    // chặn luôn vì ``required``. Mảng là dạng dữ liệu thật mà API nhận
+    // (``audio_sequence``), nên cả hai lối nhập cùng sửa một sự thật.
+    audio_sequence: [],
     repeat_count: 4,
     repeat_interval_ms: 1200,
     allowed_department_ids: [],
@@ -176,7 +189,7 @@ export default function AdminDashboard() {
         priority: item.priority || 1,
         display_color: item.display_color || '#dc2626',
         receiver_group_id: item.receiver_group?.id || item.receiver_group_id || '',
-        audio_file_path: (item.audio_sequence || []).join('\n'),
+        audio_sequence: item.audio_sequence || [],
         repeat_count: item.repeat_count || 4,
         repeat_interval_ms: item.repeat_interval_ms || 1200,
         allowed_department_ids: item.allowed_department_ids || [],
@@ -190,7 +203,7 @@ export default function AdminDashboard() {
         priority: 1,
         display_color: '#dc2626',
         receiver_group_id: receiverGroups[0]?.id || '',
-        audio_file_path: audioFiles[0]?.file_path || '',
+        audio_sequence: audioFiles[0] ? [audioFiles[0].file_path] : [],
         repeat_count: 4,
         repeat_interval_ms: 1200,
         allowed_department_ids: [],
@@ -204,7 +217,7 @@ export default function AdminDashboard() {
     e.preventDefault();
     // Một mã báo động không có tệp âm thanh vẫn hiện trên màn hình trạm nhưng
     // không hú ở đâu cả. Chặn ngay tại đây thay vì để phát hiện trong ca cấp cứu.
-    const audioSequence = alarmTypeForm.audio_file_path.split('\n').map(path => path.trim()).filter(Boolean);
+    const audioSequence = normalizeAudioSequence(alarmTypeForm.audio_sequence);
     if (audioSequence.length === 0) {
       notify('Cần chọn ít nhất một tệp âm thanh cho mã báo động');
       return;
@@ -427,7 +440,13 @@ export default function AdminDashboard() {
         code: item.code,
         name: item.name,
         description: item.description || '',
-        station_ids: undefined,
+        // Điền sẵn các trạm đang thuộc nhóm. Trước đây trường này bị đặt thành
+        // ``undefined`` để tránh vô tình xóa hết thành viên — cách chữa đó chỉ che
+        // triệu chứng, vì nó đánh đổi một lỗi âm thầm lấy một form không dùng được:
+        // mở nhóm ra không thấy trạm nào, và người quản trị không có cách nào thêm
+        // trạm vào nhóm. API nhóm nhận nay trả về ``station_ids`` nên form đọc được
+        // đúng trạng thái hiện tại.
+        station_ids: item.station_ids || [],
       });
     } else {
       setGroupForm({
@@ -1176,7 +1195,7 @@ export default function AdminDashboard() {
 
             <form onSubmit={saveAlarmType} className="space-y-4 text-xs font-mono">
               <label className="block">Thời gian hiệu lực cảnh báo (giây)<input type="number" min="10" max="86400" required className="w-full border p-2" value={alarmTypeForm.validity_seconds} onChange={event => setAlarmTypeForm({...alarmTypeForm, validity_seconds: event.target.value})} /></label>
-              <label className="block">Chuỗi audio theo thứ tự (mỗi dòng một đường dẫn local)<textarea rows={4} className="w-full border p-2" value={alarmTypeForm.audio_file_path} onChange={event => setAlarmTypeForm({...alarmTypeForm, audio_file_path: event.target.value})} /></label>
+              <label className="block">Chuỗi audio theo thứ tự (mỗi dòng một đường dẫn local)<textarea rows={4} className="w-full border p-2" value={formatAudioSequenceText(alarmTypeForm.audio_sequence)} onChange={event => setAlarmTypeForm({ ...alarmTypeForm, audio_sequence: parseAudioSequenceText(event.target.value) })} /></label>
               <fieldset className="border border-slate-300 p-3">
                 <legend>Khoa/phòng được phép phát</legend>
                 {departments.map(dept => <label key={dept.id} className="block py-1"><input type="checkbox" checked={alarmTypeForm.allowed_department_ids?.includes(dept.id) || false} onChange={event => setAlarmTypeForm({...alarmTypeForm, allowed_department_ids: event.target.checked ? [...(alarmTypeForm.allowed_department_ids || []), dept.id] : alarmTypeForm.allowed_department_ids.filter(id => id !== dept.id)})} /> {dept.name}</label>)}
@@ -1245,14 +1264,19 @@ export default function AdminDashboard() {
                     <span>GÁN FILE ÂM THANH CÒI HÚ (SOUND MAPPING):</span>
                   </span>
                 </div>
+                {/* Ô chọn tệp giờ chỉ THÊM vào cuối chuỗi, không ghi đè. Ô văn bản ở
+                    trên và danh sách dưới đây cùng sửa một mảng duy nhất, nên không
+                    còn cảnh chọn một tệp là mất hết những tệp đã khai. */}
                 <div>
                   <select
-                    value={alarmTypeForm.audio_file_path}
-                    onChange={(e) => setAlarmTypeForm({ ...alarmTypeForm, audio_file_path: e.target.value })}
-                    required
+                    value=""
+                    onChange={(e) => setAlarmTypeForm((prev) => ({
+                      ...prev,
+                      audio_sequence: addAudioPath(prev.audio_sequence, e.target.value),
+                    }))}
                     className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-900 font-mono focus:border-red-500 focus:outline-none"
                   >
-                    <option value="">-- Chọn tệp âm thanh (bắt buộc) --</option>
+                    <option value="">-- Thêm tệp âm thanh vào chuỗi --</option>
                     {audioFiles.map((af) => (
                       <option key={af.id} value={af.file_path}>
                         {af.code} — {af.name} ({af.file_path})
@@ -1260,8 +1284,36 @@ export default function AdminDashboard() {
                     ))}
                   </select>
                 </div>
-                {alarmTypeForm.audio_file_path && (
-                  <audio controls src={alarmTypeForm.audio_file_path} className="w-full h-8 mt-1" />
+                {(alarmTypeForm.audio_sequence || []).length > 0 ? (
+                  <ol className="space-y-1">
+                    {(alarmTypeForm.audio_sequence || []).map((path, idx) => (
+                      <li
+                        key={`${path}-${idx}`}
+                        className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5"
+                      >
+                        <span className="font-mono text-slate-800 truncate">
+                          {idx + 1}. {path || '(dòng trống)'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setAlarmTypeForm((prev) => ({
+                            ...prev,
+                            audio_sequence: removeAudioPathAt(prev.audio_sequence, idx),
+                          }))}
+                          className="shrink-0 text-red-600 hover:text-red-800 font-bold"
+                        >
+                          XÓA
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-red-700 font-sans">
+                    Chưa có tệp nào — báo động sẽ hiện trên màn hình trạm nhưng không hú ở đâu cả.
+                  </p>
+                )}
+                {alarmTypeForm.audio_sequence?.[0] && (
+                  <audio controls src={alarmTypeForm.audio_sequence[0]} className="w-full h-8 mt-1" />
                 )}
               </div>
 
@@ -1393,6 +1445,56 @@ export default function AdminDashboard() {
                   />
                 </div>
               </div>
+
+              {/* Trước đây form này không có ô nào cho nhóm nhận, trong khi
+                  ``stationForm.receiver_group_ids`` vẫn được gửi đi: mở form sửa một
+                  trạm đang thuộc nhóm rồi bấm Lưu là xóa sạch tư cách thành viên của
+                  trạm đó mà không ai thấy mình vừa làm gì. */}
+              <fieldset className="border border-slate-300 p-3">
+                <legend className="text-slate-600 font-bold uppercase px-1">Nhóm nhận tin của trạm</legend>
+                {receiverGroups.length === 0 ? (
+                  <p className="text-slate-500 font-sans">Chưa có nhóm nhận nào. Tạo nhóm trước nếu muốn gom trạm này vào một nhóm.</p>
+                ) : (
+                  receiverGroups.map((g) => (
+                    <label key={g.id} className="block py-1">
+                      <input
+                        type="checkbox"
+                        checked={stationForm.receiver_group_ids.includes(g.id)}
+                        onChange={(e) => setStationForm({
+                          ...stationForm,
+                          receiver_group_ids: e.target.checked
+                            ? [...stationForm.receiver_group_ids, g.id]
+                            : stationForm.receiver_group_ids.filter((id) => id !== g.id),
+                        })}
+                      />{' '}
+                      {g.name} <span className="text-slate-500">({g.code})</span>
+                    </label>
+                  ))
+                )}
+              </fieldset>
+
+              <fieldset className="border border-slate-300 rounded-lg p-3">
+                <legend className="px-1 font-bold text-slate-600 uppercase">Nhóm nhận tin của trạm</legend>
+                {receiverGroups.length === 0 ? (
+                  <p className="text-slate-500 font-sans">Chưa có nhóm nhận nào để gán.</p>
+                ) : (
+                  receiverGroups.map((g) => (
+                    <label key={g.id} className="block py-1">
+                      <input
+                        type="checkbox"
+                        checked={stationForm.receiver_group_ids.includes(g.id)}
+                        onChange={(e) => setStationForm({
+                          ...stationForm,
+                          receiver_group_ids: e.target.checked
+                            ? [...stationForm.receiver_group_ids, g.id]
+                            : stationForm.receiver_group_ids.filter((id) => id !== g.id),
+                        })}
+                      />{' '}
+                      {g.name} <span className="text-slate-500">({g.code})</span>
+                    </label>
+                  ))
+                )}
+              </fieldset>
 
               <p>Trên thiết bị nhận, Admin chọn trạm và bấm “Xác nhận thiết bị này”. Không cần nhập mã bảo mật thủ công.</p>
 
@@ -1629,6 +1731,33 @@ export default function AdminDashboard() {
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-900 font-sans"
                 />
               </div>
+
+              {/* Ô chọn trạm: nay mới tồn tại. Gửi ``station_ids`` là ghi đè toàn bộ
+                  thành viên của nhóm, nên danh sách này phải phản ánh đúng trạng thái
+                  hiện tại — nếu không, mỗi lần sửa tên nhóm là một lần xóa sạch trạm
+                  khỏi nhóm. */}
+              <fieldset className="border border-slate-300 p-3 max-h-56 overflow-y-auto">
+                <legend className="text-slate-600 font-bold uppercase px-1">Trạm thuộc nhóm</legend>
+                {stations.length === 0 ? (
+                  <p className="text-slate-500 font-sans">Chưa có trạm nhận nào để gán.</p>
+                ) : (
+                  stations.map((s) => (
+                    <label key={s.id} className="block py-1">
+                      <input
+                        type="checkbox"
+                        checked={groupForm.station_ids.includes(s.id)}
+                        onChange={(e) => setGroupForm({
+                          ...groupForm,
+                          station_ids: e.target.checked
+                            ? [...groupForm.station_ids, s.id]
+                            : groupForm.station_ids.filter((id) => id !== s.id),
+                        })}
+                      />{' '}
+                      {s.station_code} <span className="text-slate-500">— {s.name}</span>
+                    </label>
+                  ))
+                )}
+              </fieldset>
 
               <div className="flex space-x-3 pt-3 border-t border-slate-100">
                 <button

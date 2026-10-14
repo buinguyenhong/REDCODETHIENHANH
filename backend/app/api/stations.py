@@ -527,8 +527,15 @@ async def delete_station(
     if not station:
         raise HTTPException(status_code=404, detail="Không tìm thấy trạm nhận")
     station.enabled = False
+    await db.commit()
+    # Đóng socket đang giữ trạm, cùng khuôn với update_station: gỡ khỏi manager
+    # TRƯỚC rồi mới đóng, và kèm lý do đọc được. Trước đây chỗ này chỉ gọi
+    # ws.close(code=1008) trần: thiếu lý do nên kiosk rơi vào câu thông báo chung
+    # "chưa được xác nhận hoặc credential đã bị thu hồi", và thiếu disconnect nên
+    # cho tới khi vòng đọc của server kịp nhận ra socket đã đóng, mọi báo động
+    # vẫn thử gửi vào xác đó và tốn trọn 1 giây timeout mỗi lần.
     ws = manager.active_stations.get(station.station_code)
     if ws:
-        await ws.close(code=1008)
-    await db.commit()
+        await manager.disconnect_station(station.station_code, ws)
+        await ws.close(code=1008, reason='Station deleted by administrator')
     return {"message": "Đã xóa trạm nhận thành công"}

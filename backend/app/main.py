@@ -28,13 +28,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("redcode.main")
 
+
+def create_all_allowed(environment: str, database_url: str) -> bool:
+    """Có được tự tạo bảng từ metadata không.
+
+    Chỉ trên SQLite, nơi schema là thứ dùng-một-lần cho dev. Trên PostgreSQL schema
+    thuộc về Alembic: ``create_all`` ở đó sinh bảng nằm ngoài lịch sử migration, và
+    lần ``alembic upgrade`` sau sẽ đụng độ với chúng. Chỉ dựa vào ``ENVIRONMENT`` là
+    không đủ chặn vì biến này có thể bị đặt sai trong ``.env`` — đúng lỗi F-12, khi
+    giá trị viết cứng trong docker-compose khiến ``.env`` không ghi đè được.
+
+    Tách thành hàm riêng để kiểm thử được quyết định này mà không phải dựng cả
+    vòng đời ứng dụng.
+    """
+    return environment in ('development', 'test') and database_url.startswith('sqlite')
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing Redcode Hospital Server...")
     os.makedirs(settings.AUDIO_UPLOAD_DIR, exist_ok=True)
-    
-    # 1. Create DB tables if not present
-    if settings.ENVIRONMENT in ('development', 'test'):
+
+    # 1. Create DB tables if not present.
+    if create_all_allowed(settings.ENVIRONMENT, settings.DATABASE_URL):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as session:
@@ -148,6 +164,37 @@ async def station_has_unresolved_alarms(station_code: str) -> bool:
     return row is not None
 
 
+# Nhịp tim chạy 5 giây một lần, nhưng phép kiểm tra "trạm còn báo động chưa ACK"
+# không cần chạy mỗi nhịp. Nó chỉ bắt đúng một tình huống: khung broadcast bị mất
+# trong khi socket vẫn sống. Mọi tình huống khác đã có đường khác phủ — trạm mất
+# kết nối rồi nối lại thì connect kiểm tra đầy đủ, còn báo động mới phát thì chính
+# khung broadcast là đường chính. Chạy mỗi 5 giây cho 100 trạm là khoảng 1.200 lượt
+# JOIN ba bảng mỗi phút; giãn ra 30 giây còn khoảng 200 mà tình huống hiếm nói
+# trên vẫn được phát hiện trong vòng nửa phút.
+#
+# Đã cân nhắc thay hẳn bằng cờ trong bộ nhớ (bật khi broadcast tới trạm, tắt khi
+# trạm ACK). Cách đó bỏ được hẳn truy vấn, nhưng nếu cờ lệch một lần thì trạm thôi
+# được nhắc đồng bộ trong im lặng — đúng loại hỏng khó thấy trong hệ báo động.
+# Giãn nhịp giữ nguyên nguồn sự thật là database nên không có rủi ro đó.
+PENDING_SYNC_CHECK_INTERVAL_SECONDS = 30
+_last_pending_sync_check: dict[str, datetime] = {}
+
+
+def _pending_sync_check_due(station_code: str) -> bool:
+    """Đã tới hạn kiểm tra báo động chưa ACK của trạm này chưa.
+
+    Ghi nhận luôn lượt kiểm tra hiện tại khi trả về True, nên hàm vừa hỏi vừa đặt
+    hạn. Sổ chỉ có một mục cho mỗi mã trạm từng thấy (cỡ vài trăm), phù hợp với
+    ràng buộc một API worker.
+    """
+    now = datetime.now(timezone.utc)
+    previous = _last_pending_sync_check.get(station_code)
+    if previous is not None and (now - previous).total_seconds() < PENDING_SYNC_CHECK_INTERVAL_SECONDS:
+        return False
+    _last_pending_sync_check[station_code] = now
+    return True
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -192,6 +239,10 @@ async def websocket_endpoint(
             # cũng tự gọi sync khi mở socket, nhưng để server làm chủ việc phục hồi
             # giúp thiết bị nhận theo giao thức (không tự sync) không im lặng mãi
             # sau khi server khởi động lại.
+            #
+            # Đây là lượt kiểm tra đầy đủ, nên nó cũng đặt lại hạn cho phép kiểm
+            # tra định kỳ trong nhịp tim — vừa nối xong thì chưa cần hỏi lại.
+            _last_pending_sync_check[station_code] = datetime.now(timezone.utc)
             if await station_has_unresolved_alarms(station_code):
                 await websocket.send_text(json.dumps({"type": "SYNC_REQUIRED"}))
 
@@ -214,10 +265,11 @@ async def websocket_endpoint(
                             "type": "HEARTBEAT_ACK",
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }))
-                        async with AsyncSessionLocal() as session:
-                            pending = (await session.execute(select(AlarmStationState.id).join(Station).join(Alarm, Alarm.id == AlarmStationState.alarm_id).where(Station.station_code == station_code, Alarm.status == AlarmStatus.ACTIVE.value, AlarmStationState.received_at == None))).scalars().first()
-                        if pending:
-                            await websocket.send_text(json.dumps({'type': 'SYNC_REQUIRED'}))
+                        if _pending_sync_check_due(station_code):
+                            async with AsyncSessionLocal() as session:
+                                pending = (await session.execute(select(AlarmStationState.id).join(Station).join(Alarm, Alarm.id == AlarmStationState.alarm_id).where(Station.station_code == station_code, Alarm.status == AlarmStatus.ACTIVE.value, AlarmStationState.received_at == None))).scalars().first()
+                            if pending:
+                                await websocket.send_text(json.dumps({'type': 'SYNC_REQUIRED'}))
 
                     elif msg_type == "AUDIO_STATE_CHANGED":
                         audio_ready = bool(msg.get("audio_ready", False))
@@ -250,6 +302,10 @@ async def websocket_endpoint(
         except Exception as e:
             logger.error(f"WebSocket station error ({station_code}): {e}")
             await manager.disconnect_station(station_code, websocket)
+        finally:
+            # Hạn kiểm tra gắn với một phiên kết nối, không phải với mã trạm: dọn ở
+            # đây để sổ trong bộ nhớ không giữ lại mã của trạm đã tháo máy.
+            _last_pending_sync_check.pop(station_code, None)
 
     elif actual_type == "dashboard":
         # Strictly authenticate dashboard token

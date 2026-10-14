@@ -41,7 +41,34 @@ def replay_or_conflict(existing, same_request):
             status_code=409,
             detail=f'Yêu cầu này đã được xử lý trước đó và báo động đã kết thúc ({existing.status}); hãy phát lại bằng yêu cầu mới'
         )
-    return AlarmOut.model_validate(existing)
+    return replay_response(existing)
+
+
+def replay_response(existing) -> AlarmCreateOut:
+    """Phản hồi cho lượt phát lại, kèm số liệu trạm thay vì để chúng rơi về 0.
+
+    ``AlarmOut`` không có hai trường đếm trạm; chúng chỉ nằm trên ``AlarmCreateOut``
+    với mặc định 0. Trả ``AlarmOut`` trần nghĩa là một lượt phát lại — đúng thứ
+    xảy ra khi mất gói ở chân HTTP phản hồi rồi client thử lại — báo "0 trạm đã
+    nhận". ``OperatorDashboard`` dịch con số 0 đó thành "KHÔNG trạm nào đang trực
+    tuyến — hiện chưa có còi nào hú" trong khi còi đang hú, và người trực đi gọi
+    điện nhắc lại một báo động đã tới nơi.
+
+    Kết quả gửi của lượt broadcast gốc không được lưu, nên lượt phát lại báo cáo
+    sự thật đo được tại thời điểm trả lời: tổng trạm đích là số bản ghi
+    ``alarm_station_states`` đã tạo cho báo động này, còn số trạm đã nhận là số
+    trạm đích đang có kết nối. Vì vậy hai trường này cần ``station_states`` được
+    nạp kèm ``station`` (xem các truy vấn idempotency phía dưới).
+    """
+    out = AlarmCreateOut.model_validate(existing)
+    states = existing.station_states or []
+    connected = manager.connected_station_codes
+    out.target_station_count = len(states)
+    out.delivered_station_count = sum(
+        1 for state in states
+        if state.station is not None and state.station.station_code in connected
+    )
+    return out
 
 class SequenceGenerator:
     _lock = asyncio.Lock()
@@ -146,7 +173,9 @@ async def create_alarm(
                 selectinload(Alarm.source_department),
                 selectinload(Alarm.created_by_user),
                 selectinload(Alarm.events),
-                selectinload(Alarm.station_states)
+                # Nạp kèm station: replay_response cần station_code để đối chiếu với
+                # sổ trạm đang kết nối khi dựng lại số liệu cho lượt phát lại.
+                selectinload(Alarm.station_states).selectinload(AlarmStationState.station)
             )
             .where(Alarm.idempotency_key == alarm_in.idempotency_key)
         )
@@ -223,7 +252,7 @@ async def create_alarm(
                     selectinload(Alarm.source_department),
                     selectinload(Alarm.created_by_user),
                     selectinload(Alarm.events),
-                    selectinload(Alarm.station_states)
+                    selectinload(Alarm.station_states).selectinload(AlarmStationState.station)
                 )
                 .where(Alarm.idempotency_key == alarm_in.idempotency_key)
             )

@@ -6,6 +6,115 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-10-14 — Xử lý 12 phát hiện tồn đọng F-01…F-12
+
+Yêu cầu: "thực hiện xử lý các vấn đề còn tồn tại", sau khi đợt trước đã đọc và đánh giá 12 phát hiện F-01…F-12. Kèm chỉ dẫn: "không cần commit 2 file txt đó" (`full_source.txt`, `frontend_nginx.txt` — ảnh chụp mã nguồn để đọc ngoài IDE).
+
+Đã đọc lại code thật cho từng phát hiện trước khi sửa; **cả 12 đều đúng**. Không đổi schema, **không cần migration**, không thêm dependency, không đổi kiến trúc.
+
+### Phát hiện và cách sửa
+
+**F-01 — Giao diện Admin không có ô nào để gán trạm vào nhóm nhận.** Phát hiện đúng, và nặng hơn mô tả: `stationForm.receiver_group_ids` và `groupForm.station_ids` đều **đã được gửi lên API** nhưng không có input nào điều khiển chúng. Hệ quả là hai lỗi ngược nhau: mở form sửa một trạm đang thuộc nhóm rồi bấm Lưu là **xóa sạch** tư cách thành viên của trạm đó; còn `openReceiverGroupModal` đặt `station_ids: undefined` khi sửa nhóm (một cách chữa triệu chứng từ đợt trước) nên form nhóm không hiện trạm nào và không có cách nào thêm trạm vào nhóm.
+
+Sửa cả hai vế:
+
+1. **Máy chủ** — `ReceiverGroupOut` thêm trường `station_ids` cùng classmethod `for_group()`; `GET/POST/PUT /api/receiver-groups` dùng `selectinload(ReceiverGroup.stations)` và điền `station_ids`. Trước đây `from_attributes` **lặng lẽ** dùng giá trị mặc định `[]` khi đối tượng nguồn không có thuộc tính `station_ids`, nên mọi nhóm đều trả về danh sách trạm rỗng mà không có lỗi nào. Khi `ReceiverGroupOut` xuất hiện **lồng** trong `StationOut.receiver_groups`, trường này giữ nguyên giá trị rỗng có chủ ý: chỗ đó chỉ cần id nhóm, và nạp thêm trạm cho từng nhóm của mọi trạm là N+1 truy vấn.
+2. **Giao diện** — thêm ô chọn nhiều nhóm vào form trạm và ô chọn nhiều trạm vào form nhóm; `openReceiverGroupModal` điền sẵn `item.station_ids`.
+
+**F-02 — Tiếng thử loa bị cắt sau vài mili giây.** Phát hiện đúng. `play()` của `HTMLAudioElement` resolve lúc audio **bắt đầu** phát, không phải lúc phát xong; `verifyPlayback()` cũ gọi `pause()` ngay sau khi `play()` trả về, nên người bấm TEST LOA gần như không nghe thấy gì dù kết luận sẵn sàng/không sẵn sàng vẫn đúng. Sửa: chờ sự kiện `ended` với **trần** `PROBE_MAX_WAIT_MS = 1500` — trần là bắt buộc, vì một trình duyệt không bắn `ended` (clip treo, tab bị ẩn) sẽ giữ promise treo mãi và chặn `unlockAudio`.
+
+Sửa thêm nửa thứ hai mà đợt đánh giá đã đề xuất: nhánh `AUDIO_TEST` trong `WebSocketContext.jsx` nay gửi `AUDIO_STATE_CHANGED` về máy chủ ngay khi có kết quả, cùng khuôn với `unlockAudio`. Nhịp tim 5 giây vẫn mang theo `audio_ready` nên bảng giám sát tự đúng lại, nhưng người vừa bấm TEST LOA đang nhìn chính bảng đó — chờ tới 5 giây để thấy kết quả của một hành động vừa thực hiện là đủ lâu để họ bấm lại lần nữa. Nhánh thất bại cũng gửi, vì trạm **không hú được** là ca cần người xử lý ngay, không phải ca chờ nhịp tim tiếp theo.
+
+**F-03 — Lượt phát lại theo `idempotency_key` báo "0 trạm đã nhận".** Phát hiện đúng, và đây là lời nói dối nguy hiểm nhất trong đợt này. `AlarmOut` không có hai trường đếm trạm — chúng chỉ nằm trên `AlarmCreateOut` với mặc định `0`. `replay_or_conflict` trả `AlarmOut.model_validate(existing)` trần, nên một lượt phát lại (đúng thứ xảy ra khi mất gói ở chân HTTP phản hồi rồi client thử lại) báo "0 trạm". `OperatorDashboard` dịch số 0 đó thành "KHÔNG trạm nào đang trực tuyến — hiện chưa có còi nào hú" **trong khi còi đang hú**, và người trực đi gọi điện nhắc lại một báo động đã tới nơi.
+
+Sửa bằng hàm riêng `replay_response()` trả `AlarmCreateOut`. **Đã cân nhắc và bác bỏ** phương án thêm hai trường vào `AlarmOut`: `AlarmOut` còn là response model của `cancel`/`expire`/`list`/`get`, nên làm vậy sẽ khiến chúng báo `0`, và `?? 0` phía frontend biến "vắng mặt" thành "sai lệch" một cách âm thầm. Kết quả gửi của lượt broadcast gốc không được lưu, nên lượt phát lại báo cáo **sự thật đo được tại thời điểm trả lời**: tổng trạm đích là số bản ghi `alarm_station_states` đã tạo, còn số trạm đã nhận là số trạm đích **đang có kết nối**. Hai truy vấn idempotency được nạp kèm `AlarmStationState.station` để lấy `station_code`.
+
+**F-04 — Broadcast tới dashboard là vòng lặp tuần tự.** Phát hiện đúng. Mỗi socket chờ tối đa 1 giây, và hàm này nằm **trên đường phản hồi của `POST /api/alarms`**, nên vài dashboard treo nửa vời (máy ngủ, cáp đứt) cộng thẳng từng ấy giây vào thời gian người trực chờ xác nhận. Sửa: `asyncio.gather` song song theo đúng khuôn `broadcast_alarm`, rồi dọn socket chết sau khi tất cả đã có kết quả. Thêm property `connected_station_codes` (đọc thuần, không `await`) cho F-03.
+
+**F-05 — Hai ô nhập cùng ghi vào một trường `audio_file_path`.** Phát hiện đúng: form mã báo động có **cả** một `<textarea>` nhiều dòng **và** một `<select required>` cùng bound vào `alarmTypeForm.audio_file_path`. Chọn một tệp ở ô select ghi đè toàn bộ nội dung vừa gõ; gõ nhiều dòng thì ô select không khớp giá trị nào và trình duyệt chặn submit vì `required`. Sửa: trường đổi thành **mảng có thứ tự** `audio_sequence` — đúng dạng dữ liệu API nhận — và hai lối nhập cùng sửa một sự thật: ô chọn tệp **thêm vào cuối** chuỗi, kèm danh sách có nút xóa từng mục. Ô chọn tệp không còn `required` (nó không còn là nguồn duy nhất) nhưng `saveAlarmType` vẫn chặn khi chuỗi rỗng, đúng ràng buộc `AlarmTypeCreate.audio_sequence` phía máy chủ.
+
+**F-06 — Xóa trạm chỉ gọi `ws.close(1008)` trần.** Phát hiện đúng. Thiếu `reason` nên kiosk rơi vào câu thông báo chung "chưa được xác nhận hoặc credential đã bị thu hồi" thay vì lý do thật; thiếu `disconnect_station` nên cho tới khi vòng đọc của máy chủ kịp nhận ra socket đã đóng, **mọi báo động vẫn thử gửi vào xác đó và tốn trọn 1 giây timeout mỗi lần**. Sửa theo đúng khuôn `update_station`: gỡ khỏi manager **trước** rồi mới đóng, kèm lý do `'Station deleted by administrator'`.
+
+**F-07 — Socket mất nhịp tim có thể để màn hình trạm "đã kết nối" hàng chục giây.** Phát hiện đúng. Client chỉ gọi `ws.close()` rồi chờ `onclose`. Với socket nửa mở (máy chủ biến mất không gửi FIN/RST — đúng kiểu mất mạng LAN hoặc máy chủ bị tắt nguồn), trình duyệt giữ nó ở CLOSING cho tới khi hết hạn chờ TCP, và **không có lượt kết nối lại nào được hẹn** suốt thời gian đó: trạm hiện "đã kết nối" nhưng còi không hú khi báo động phát ra. Sửa bằng `recoverFromHeartbeatTimeout()` trong `utils/socketRecovery.js`: dừng vòng nhịp tim, đặt trạng thái UI, quên tham chiếu socket, **gỡ hết handler trước khi đóng**, rồi hẹn kết nối lại ngay. Việc gỡ handler trước là điểm chặn lượt kết nối lại thứ hai — nếu không, một lượt đóng sinh hai lượt kết nối lại và hai socket cùng sống trên một trạm thì máy chủ đá nhau bằng mã 4001.
+
+**F-08 — Nút Hủy hiện cho mọi báo động đang hiệu lực.** Phát hiện đúng. Máy chủ chỉ cho Admin hoặc chính người đã phát (`cancel_alarm` trả 403), nhưng giao diện hiện nút cho tất cả, nên một Operator khác khoa bấm vào chỉ nhận 403 kèm câu "Lỗi hủy báo động" — trong khi việc họ cần làm là gọi cho người đã phát. Sửa: `canCancelAlarm()` trong `utils/permissions.js` (Admin, hoặc trùng `created_by_user_id`), ẩn nút và thay bằng câu giải thích. So sánh **chặt**: thiếu id ở một trong hai phía không được coi là trùng nhau, nếu không thì bản ghi thiếu `created_by_user_id` sẽ mở nút Hủy cho tất cả.
+
+**F-09 — Phép kiểm tra "trạm còn báo động chưa ACK" chạy mỗi nhịp tim.** Phát hiện đúng: 5 giây một lần cho mọi trạm là khoảng **1.200 lượt JOIN ba bảng mỗi phút** cho 100 trạm. Sửa bằng **giãn nhịp** 30 giây, không thay bằng cờ trong bộ nhớ. **Đã cân nhắc và bác bỏ** phương án cờ (bật khi broadcast tới trạm, tắt khi trạm ACK): cách đó bỏ được hẳn truy vấn, nhưng nếu cờ lệch một lần thì trạm **thôi được nhắc đồng bộ trong im lặng** — đúng loại hỏng khó thấy mà hệ báo động không được phép có. Giãn nhịp giữ nguyên nguồn sự thật là database nên không có rủi ro đó, và tình huống hiếm vẫn được phát hiện trong vòng nửa phút. Hạn kiểm tra được đặt lại lúc connect (vừa nối xong thì đã là một lượt kiểm tra đầy đủ) và **dọn trong `finally`** để sổ trong bộ nhớ không giữ lại mã của trạm đã tháo máy.
+
+**F-10 — Báo cáo tổng hợp nạp cả đối tượng ORM cho một truy vấn chỉ để đếm.** Phát hiện đúng: `select(Alarm)` + hai `selectinload` kéo về mọi cột của mọi báo động, rồi thêm hai truy vấn nữa để dựng đối tượng ORM cho hai bảng chỉ nhằm đọc một cái tên — trên bảng **không giới hạn số dòng** và lớn dần theo số ca tích lũy. Sửa: chọn đúng bốn cột với hai `outerjoin`. Dùng `outerjoin` chứ không `join` là chủ ý: báo động thiếu loại hoặc thiếu khoa phải rơi vào nhóm "Không xác định", không được biến mất khỏi báo cáo. Hai phép join đều là nhiều-một nên không nhân dòng. Vẫn giữ phép đếm bằng Python (không dùng `date_trunc`) để không phụ thuộc dialect.
+
+**F-11 — `backend/app/core/n8n_client.py` là mã chết.** Phát hiện đúng: di sản của kiến trúc gọi HTTP trực tiếp trước khi chuyển sang outbox, chỉ được tham chiếu bởi chính nó và bởi ảnh chụp `full_source.txt` không commit. Đã xóa; grep toàn repo xác nhận không còn tham chiếu.
+
+**F-12 — `ENVIRONMENT` viết cứng trong `docker-compose.yml` khiến `.env` không ghi đè được.** Phát hiện đúng. Vì `environment` **thắng** `env_file`, các guard cấu hình production (`SECRET_KEY`, `ALLOWED_ORIGINS`, `DEMO_MODE`) không thể tắt bằng `.env` dù người triển khai muốn chạy thử cấu hình khác. Sửa: `ENVIRONMENT=${ENVIRONMENT:-production}` (mặc định production khi `.env` không khai báo). Thêm **phòng thủ theo chiều sâu** ở `main.py`: `create_all` chỉ chạy khi `ENVIRONMENT in ('development','test')` **và** `DATABASE_URL` là SQLite — trên PostgreSQL schema thuộc về Alembic, và chỉ dựa vào `ENVIRONMENT` là không đủ chặn vì chính biến đó có thể bị đặt sai.
+
+### Thay đổi theo tệp
+
+- `backend/app/api/alarms.py` — `replay_response()`, nạp kèm `AlarmStationState.station` ở cả hai truy vấn idempotency.
+- `backend/app/api/receiver_groups.py` — `selectinload(ReceiverGroup.stations)`, helper `_group_with_stations()`, cả ba đường dẫn đọc dùng `ReceiverGroupOut.for_group()`.
+- `backend/app/api/reports.py` — `get_summary_report` chọn cột thay vì nạp đối tượng ORM.
+- `backend/app/api/stations.py` — `delete_station` gỡ khỏi manager trước khi đóng, kèm lý do.
+- `backend/app/core/websocket_manager.py` — `broadcast_to_dashboards` song song; property `connected_station_codes`.
+- `backend/app/core/n8n_client.py` — **đã xóa** (F-11).
+- `backend/app/main.py` — `create_all_allowed()`, giãn nhịp `PENDING_SYNC_CHECK_INTERVAL_SECONDS = 30` + `_pending_sync_check_due()` + dọn sổ trong `finally`.
+- `backend/app/schemas/__init__.py` — `ReceiverGroupOut.station_ids` + `for_group()`.
+- `docker-compose.yml` — `ENVIRONMENT=${ENVIRONMENT:-production}` kèm chú thích.
+- `frontend/src/utils/soundPlayer.js` — chờ `ended` có trần (`PROBE_MAX_WAIT_MS`).
+- `frontend/src/utils/alarmTypeAudio.js`, `permissions.js`, `socketRecovery.js` — **mới**; gom phép xử lý thuần ra khỏi component để kiểm thử được.
+- `frontend/src/context/WebSocketContext.jsx` — `AUDIO_TEST` gửi `AUDIO_STATE_CHANGED`; nhịp tim dùng `recoverFromHeartbeatTimeout`.
+- `frontend/src/pages/AdminDashboard.jsx` — ô chọn nhóm cho trạm, ô chọn trạm cho nhóm, chuỗi âm thanh dạng mảng.
+- `frontend/src/pages/OperatorDashboard.jsx` — nút Hủy theo `canCancelAlarm`.
+- `.gitignore` — bỏ qua `full_source.txt`, `frontend_nginx.txt` (theo yêu cầu không commit).
+
+### Bằng chứng thực chạy
+
+```bash
+# Backend — toàn bộ suite trên SQLite tạm, KHÔNG đụng backend/redcode.db
+cd backend
+DATABASE_URL="sqlite+aiosqlite:///D:/Project/RED CODE/.tmp-test/full.db" \
+ENVIRONMENT=test DEMO_MODE=true N8N_ENABLED=false \
+../venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+# → 94 passed, 4 warnings in 69.67s   (81 trước đợt này + 13 test mới)
+
+# Frontend
+cd frontend && npm test
+# → tests 39 / pass 39 / fail 0        (30 trước đợt này + 9 test mới)
+cd frontend && npm run build
+# → ✓ 1503 modules transformed, built in 6.25s
+
+# Compose: ENVIRONMENT nay do .env quyết định, không còn viết cứng
+docker compose config | grep ENVIRONMENT
+# → ENVIRONMENT: development           (.env khai ENVIRONMENT=development)
+git show HEAD:docker-compose.yml | grep ENVIRONMENT
+# → - ENVIRONMENT=production           (giá trị viết cứng TRƯỚC khi sửa)
+
+# F-11: không còn tham chiếu tới module đã xóa
+grep -rn "n8n_client\|send_n8n_alarm_notification" --include=*.py --include=*.js --include=*.jsx --include=*.yml .
+# → none
+```
+
+### Kiểm chứng âm — mỗi test hồi quy có thật sự bắt lỗi cũ
+
+Script `.tmp-test/negative_check.py` lần lượt **hoàn nguyên từng bản sửa** về mã trước đó, chạy đúng test đã viết cho nó, rồi khôi phục tệp từ bản sao lưu trong `finally`. Một test chỉ được coi là có giá trị khi nó **thất bại** ở trạng thái đã hoàn nguyên.
+
+```
+[ĐẠT] F-03 replay trả AlarmOut trần (số trạm rơi về 0)
+[ĐẠT] F-04 broadcast dashboard tuần tự thay vì song song
+[ĐẠT] F-06 xóa trạm chỉ close(1008) trần, không gỡ khỏi sổ phiên
+[ĐẠT] F-09 bỏ giãn nhịp, kiểm tra chạy mỗi nhịp tim
+[ĐẠT] F-10 báo cáo nạp đối tượng ORM kèm join trong
+[ĐẠT] F-12 create_all chạy trên PostgreSQL khi ENVIRONMENT=development
+→ 6/6 test chứng minh được là có bắt lỗi
+```
+
+Test hồi quy mới: `backend/tests/test_review_round3_regressions.py` (13 test), `frontend/tests/alarmTypeAudio.test.js`, `permissions.test.js`, `socketRecovery.test.js`, và 2 test mới trong `soundPlayer.test.js`. Phần giao diện thuần (F-01 UI, F-02 nửa gửi trạng thái, F-05 render, F-07 dây nối vào `WebSocketContext`, F-08 dây nối vào `OperatorDashboard`) **chưa có test tự động** — chúng chỉ được kiểm bằng `npm run build` xanh, không phải bằng chứng hành vi.
+
+### Giới hạn
+
+- **Chưa kiểm chứng trên thiết bị thật.** F-02 (tiếng thử nghe được), F-07 (màn hình trạm hết "đã kết nối" giả) và F-08 (nút Hủy) đều là hành vi phía trình duyệt; các bài test ở trên chỉ chứng minh **logic** đúng, không chứng minh thiết bị thật hoạt động đúng.
+- **Chưa dựng stack Docker.** `docker compose config` đã chạy (bằng chứng ở trên) nhưng chưa `up` — chưa xác nhận backend container khởi động được với `ENVIRONMENT` do `.env` quyết định.
+- **F-03 vẫn không tái tạo được kết quả gửi của lượt broadcast gốc.** Lượt phát lại báo cáo sự thật đo được **tại thời điểm trả lời**; nếu một trạm ngắt kết nối giữa hai lượt thì con số khác đi, và đó là hành vi đúng chứ không phải sai số.
+- **Chưa chạy lại quy trình audit tổng thể** theo yêu cầu trước đó của người dùng.
+
 ## 2026-10-13 — Chốt URL webhook n8n thành `http://n8n:5678/webhook/redcode`
 
 Yêu cầu: "tạm thời bỏ qua chưa cần test n8n, định hướng: khi có sự kiện cần thông báo, call tới url `http://n8n:5678/webhook/redcode` để gửi thông tin".

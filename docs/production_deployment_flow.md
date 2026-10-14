@@ -13,7 +13,7 @@ Tài liệu dành cho người trực tiếp triển khai tại bệnh viện. T
 
 **Trạng thái trạm nay chỉ nói điều chứng minh được.** Một trạm chỉ `ONLINE`/`AUDIO READY` khi có kênh WebSocket thật. Sau khi khởi động lại máy chủ, toàn bộ cờ cũ bị xóa và mọi trạm hiện `OFFLINE` cho tới khi kết nối lại — đây là hành vi đúng. Trong cửa sổ triển khai/upgrade phải có người xác nhận từng máy trở lại ONLINE.
 
-**Hai con số thay cho một lời khẳng định.** Phản hồi phát báo động có `target_station_count` (số trạm đích) và `delivered_station_count` (số trạm gửi thành công). Nghiệm thu phải đối chiếu cả hai; `delivered < target` là có trạm chưa nhận, không phải "đã phát xong".
+**Hai con số thay cho một lời khẳng định.** Phản hồi phát báo động có `target_station_count` (số trạm đích) và `delivered_station_count` (số trạm gửi thành công). Nghiệm thu phải đối chiếu cả hai; `delivered < target` là có trạm chưa nhận, không phải "đã phát xong". Lượt **phát lại** cùng `idempotency_key` của một báo động còn hiệu lực cũng trả hai con số đó (đo tại thời điểm trả lời), nên khi mất gói ở chân phản hồi rồi client thử lại, người trực không bị báo nhầm "0 trạm".
 
 ## 1. Nhìn nhanh: đường đi của hệ thống
 

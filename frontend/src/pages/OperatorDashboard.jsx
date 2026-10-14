@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
 import { api } from '../api/client';
 import { randomId } from '../utils/uuid';
+import { canCancelAlarm } from '../utils/permissions';
 import { Bell, Clock, MapPin, CheckCircle, ShieldAlert, History, XCircle, AlertCircle } from 'lucide-react';
 
 export default function OperatorDashboard() {
@@ -31,6 +32,11 @@ export default function OperatorDashboard() {
   const isPermitted = (type) => {
     return ['ADMIN', 'OPERATOR'].includes(user?.role);
   };
+
+  // Cùng điều kiện với POST /api/alarms/{id}/cancel. Trước đây nút Hủy hiện cho mọi
+  // báo động đang hiệu lực, nên một Operator khác khoa bấm vào chỉ nhận 403 và một
+  // câu "Lỗi hủy báo động" — trong khi việc họ cần làm là gọi cho người đã phát.
+  const canCancel = (alarm) => canCancelAlarm(user, alarm);
 
   const loadAlarmTypes = async () => {
     try {
@@ -323,13 +329,19 @@ export default function OperatorDashboard() {
                         </span>
 
                         {isActive && (
-                          <button
-                            onClick={() => handleCancelAlarm(alarm.id)}
-                            className="text-red-600 hover:text-red-800 hover:underline flex items-center space-x-1 font-bold"
-                          >
-                            <XCircle className="w-3.5 h-3.5" />
-                            <span>Hủy</span>
-                          </button>
+                          canCancel(alarm) ? (
+                            <button
+                              onClick={() => handleCancelAlarm(alarm.id)}
+                              className="text-red-600 hover:text-red-800 hover:underline flex items-center space-x-1 font-bold"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Hủy</span>
+                            </button>
+                          ) : (
+                            <span className="text-slate-500 font-medium">
+                              Chỉ Admin hoặc người đã phát mới hủy được
+                            </span>
+                          )
                         )}
                       </div>
                     </div>

@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { useAuth } from './AuthContext';
 import { mergeAlarmQueue, alarmsToAcknowledge } from '../utils/alarmQueue';
 import { reconnectDelay, SESSION_CONFLICT_RETRY_MS } from '../utils/reconnect';
+import { recoverFromHeartbeatTimeout } from '../utils/socketRecovery';
 import { randomId } from '../utils/uuid';
 
 const WebSocketContext = createContext(null);
@@ -147,7 +148,24 @@ export function WebSocketProvider({ children }) {
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            if (Date.now() - lastHeartbeatAckRef.current > HEARTBEAT_ACK_TIMEOUT_MS) { ws.close(); return; }
+            if (Date.now() - lastHeartbeatAckRef.current > HEARTBEAT_ACK_TIMEOUT_MS) {
+              // Không chờ onclose: socket nửa mở có thể nằm ở CLOSING hàng chục
+              // giây, và suốt thời gian đó không có lượt kết nối lại nào được hẹn.
+              // Xem utils/socketRecovery.js.
+              recoverFromHeartbeatTimeout({
+                socket: ws,
+                clearHeartbeat: () => {
+                  clearInterval(heartbeatIntervalRef.current);
+                  heartbeatIntervalRef.current = null;
+                },
+                markDisconnected: () => setIsConnected(false),
+                forgetSocket: () => {
+                  if (wsRef.current === ws) wsRef.current = null;
+                },
+                reconnect: scheduleReconnect,
+              });
+              return;
+            }
             ws.send(JSON.stringify({
               type: stationConfig?.device_token ? 'HEARTBEAT' : 'PING',
               audio_ready: soundPlayer.isAudioReady,
@@ -280,7 +298,26 @@ export function WebSocketProvider({ children }) {
         // Dùng verifyPlayback (đường ống <audio> thật) chứ không dùng tiếng bíp
         // WebAudio: lệnh này để trả lời câu hỏi "trạm này có hú được không", nên
         // phải thử đúng thứ mà báo động thật dùng.
-        soundPlayer.verifyPlayback().then(() => setAudioReady(true)).catch(() => setAudioReady(false));
+        //
+        // Báo kết quả về máy chủ NGAY, cùng khuôn với unlockAudio. Nhịp tim 5 giây
+        // cũng mang theo ``audio_ready`` nên bảng giám sát sẽ tự đúng lại, nhưng
+        // người vừa bấm TEST LOA phải nhìn bảng đó: chờ tới 5 giây để thấy kết quả
+        // của một hành động vừa thực hiện là đủ lâu để họ bấm lại lần nữa.
+        soundPlayer.verifyPlayback()
+          .then(() => {
+            setAudioReady(true);
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'AUDIO_STATE_CHANGED', audio_ready: true }));
+            }
+          })
+          .catch(() => {
+            setAudioReady(false);
+            // Trạm KHÔNG hú được cũng phải báo ngay: đây là ca cần người xử lý, không
+            // phải ca chờ nhịp tim tiếp theo.
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'AUDIO_STATE_CHANGED', audio_ready: false }));
+            }
+          });
         break;
       case 'SYNC_REQUIRED':
         synchronize().catch((err) => console.warn('Lỗi đồng bộ:', err));

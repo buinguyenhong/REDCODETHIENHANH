@@ -10,7 +10,12 @@ services:
     env_file:
       - .env
     environment:
-      - ENVIRONMENT=production
+      # ENVIRONMENT lấy từ .env (Compose đọc .env cùng thư mục để nội suy), mặc
+      # định production khi .env không khai báo. Trước đây giá trị được viết cứng
+      # ở đây nên .env không thể ghi đè, và vì `environment` thắng `env_file`, các
+      # guard cấu hình production (SECRET_KEY, ALLOWED_ORIGINS, DEMO_MODE) không
+      # thể tắt bằng .env dù người triển khai muốn chạy thử cấu hình khác.
+      - ENVIRONMENT=${ENVIRONMENT:-production}
       # In production, specify connection to your existing PostgreSQL container:
       # e.g.: postgresql+asyncpg://postgres:yourpassword@postgres_container:5432/redcode
       - DATABASE_URL=${DATABASE_URL:-}

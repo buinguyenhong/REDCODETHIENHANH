@@ -117,7 +117,29 @@ class ReceiverGroupUpdate(BaseModel):
 class ReceiverGroupOut(ReceiverGroupBase):
     id: int
     created_at: datetime
+    # Danh sách id trạm thuộc nhóm. Không suy ra được từ chính bản ghi nhóm nên phải
+    # nạp kèm quan hệ ``stations``; dùng ReceiverGroupOut.for_group() để điền.
+    #
+    # Khi mô hình này xuất hiện LỒNG trong StationOut (trường ``receiver_groups``),
+    # trường này giữ nguyên giá trị rỗng: chỗ đó chỉ cần id nhóm, và nạp thêm trạm
+    # của từng nhóm cho mọi trạm trong danh sách sẽ là N+1 truy vấn. Ai cần
+    # station_ids thì đọc từ GET /api/receiver-groups.
+    station_ids: List[int] = []
     model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def for_group(cls, group) -> "ReceiverGroupOut":
+        """Dựng phản hồi nhóm nhận, điền ``station_ids`` từ quan hệ đã nạp.
+
+        ``from_attributes`` lặng lẽ dùng giá trị mặc định ``[]`` khi đối tượng nguồn
+        không có thuộc tính ``station_ids``, nên nếu không điền tay thì mọi nhóm đều
+        trả về danh sách trạm rỗng và giao diện Admin luôn hiển thị như thể chưa gán
+        trạm nào. Truy cập ``group.stations`` ở đây là chủ ý: quan hệ chưa được nạp
+        sẽ ném lỗi rõ ràng thay vì trả về dữ liệu sai.
+        """
+        out = cls.model_validate(group)
+        out.station_ids = sorted(station.id for station in group.stations)
+        return out
 
 # --- Alarm Types ---
 class AlarmTypeBase(BaseModel):

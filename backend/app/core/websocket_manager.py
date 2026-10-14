@@ -272,19 +272,41 @@ class ConnectionManager:
         return self._monitor_task is not None and not self._monitor_task.done()
 
     async def broadcast_to_dashboards(self, message: dict):
-        dead_dashboards = []
+        """Gửi tới mọi dashboard đang mở, song song.
+
+        Trước đây là vòng lặp tuần tự, mỗi socket chờ tối đa 1 giây. Hàm này nằm
+        trên đường phản hồi của POST /api/alarms, nên vài dashboard treo nửa vời
+        (máy ngủ, cáp đứt) cộng thẳng từng ấy giây vào thời gian người trực chờ
+        xác nhận. Dùng chung khuôn với broadcast_alarm ở trên: gather song song,
+        rồi dọn socket chết sau khi tất cả đã có kết quả.
+        """
         msg_str = json.dumps(message)
         async with self._lock:
             dashboards = list(self.active_dashboards)
 
-        for ws in dashboards:
+        dead_dashboards = []
+
+        async def deliver(ws):
             try:
                 await asyncio.wait_for(ws.send_text(msg_str), timeout=1)
             except Exception:
                 dead_dashboards.append(ws)
 
+        if dashboards:
+            await asyncio.gather(*(deliver(ws) for ws in dashboards))
+
         for ws in dead_dashboards:
             await self.disconnect_dashboard(ws)
+
+    @property
+    def connected_station_codes(self) -> set:
+        """Ảnh chụp mã các trạm đang có socket, đọc thuần từ sổ trong bộ nhớ.
+
+        Dùng cho phản hồi phát lại báo động: số trạm nhận được phải suy ra từ sổ
+        này chứ không lấy lại được kết quả gửi của lượt broadcast gốc. Không await
+        nên không có điểm nhường quyền giữa chừng, ảnh chụp luôn nhất quán.
+        """
+        return set(self.active_stations)
 
     async def send_to_station(self, station_code: str, message: dict) -> bool:
         async with self._lock:

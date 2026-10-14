@@ -27,3 +27,7 @@ _reference_old_repo/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Ảnh chụp mã nguồn để đọc ngoài IDE — không phải nguồn thật, không commit.
+full_source.txt
+frontend_nginx.txt

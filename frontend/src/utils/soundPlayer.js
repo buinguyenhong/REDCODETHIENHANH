@@ -1,3 +1,8 @@
+// Trần chờ tiếng thử phát xong, tính bằng ms. Clip thử dài 0,35 giây; trần này chỉ
+// để một trình duyệt không bắn sự kiện 'ended' (clip treo, tab bị ẩn) không giữ
+// promise treo mãi và chặn unlockAudio.
+export const PROBE_MAX_WAIT_MS = 1500;
+
 class SoundPlayer {
   constructor() {
     this.audioContext = null;
@@ -89,6 +94,30 @@ class SoundPlayer {
     try {
       const probe = new Audio(this.buildProbeWavDataUri());
       await probe.play();
+      // Đợi tiếng thử phát XONG rồi mới dừng. Trước đây pause() được gọi ngay sau
+      // khi play() trả về, mà play() chỉ resolve lúc audio BẮT ĐẦU phát — nên phép
+      // thử cắt tiếng sau vài mili giây và người bấm TEST LOA gần như không nghe
+      // thấy gì, dù kết luận sẵn sàng/không sẵn sàng vẫn đúng. Chờ hết clip vừa cho
+      // phản hồi nghe được, vừa giữ nguyên thời điểm đặt cờ.
+      //
+      // Chờ có trần: nếu trình duyệt không bắn 'ended' (clip bị treo, tab bị ẩn),
+      // không được để promise này treo mãi và chặn unlockAudio.
+      await new Promise((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          probe.onended = null;
+          probe.onerror = null;
+          resolve();
+        };
+        const timer = setTimeout(done, PROBE_MAX_WAIT_MS);
+        probe.onended = done;
+        // Lỗi tải clip không phải lý do để chờ hết trần: quyền autoplay đã được
+        // chứng minh ngay khi play() ở trên trả về.
+        probe.onerror = done;
+      });
       probe.pause();
       this.isAudioReady = true;
       return true;

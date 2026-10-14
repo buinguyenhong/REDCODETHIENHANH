@@ -61,33 +61,41 @@ async def get_summary_report(
 ):
     start_dt, end_dt = parse_date_range(from_date, to_date)
 
-    stmt = select(Alarm).options(
-        selectinload(Alarm.alarm_type),
-        selectinload(Alarm.source_department)
+    # Chỉ lấy các cột cần đếm. Đây là truy vấn duy nhất trong hệ thống quét toàn
+    # bảng báo động không giới hạn, mà kết quả trả về chỉ là vài chục con số đếm.
+    # ``select(Alarm)`` kèm ``selectinload`` kéo về mọi cột của mọi báo động, rồi
+    # thêm hai truy vấn nữa để dựng đối tượng ORM cho hai bảng chỉ nhằm đọc một cái
+    # tên — chi phí đó lớn dần theo số ca báo động tích lũy của bệnh viện.
+    #
+    # Hai phép join đều là nhiều-một nên không nhân dòng, số đếm giữ nguyên.
+    stmt = (
+        select(Alarm.created_at, Alarm.status, AlarmType.name, Department.name)
+        .outerjoin(AlarmType, Alarm.alarm_type_id == AlarmType.id)
+        .outerjoin(Department, Alarm.source_department_id == Department.id)
     )
     if start_dt:
         stmt = stmt.where(Alarm.created_at >= start_dt)
     if end_dt:
         stmt = stmt.where(Alarm.created_at < end_dt)
 
-    alarms = (await db.execute(stmt)).scalars().all()
+    rows = (await db.execute(stmt)).all()
 
-    total_alarms = len(alarms)
+    total_alarms = len(rows)
     by_type: Dict[str, int] = {}
     by_dept: Dict[str, int] = {}
     by_status: Dict[str, int] = {}
     by_day, by_month = {}, {}
 
-    for a in alarms:
-        local = a.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')) if a.created_at.tzinfo is None else a.created_at.astimezone(ZoneInfo('Asia/Ho_Chi_Minh'))
+    for created_at, status, type_name, dept_name in rows:
+        local = created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')) if created_at.tzinfo is None else created_at.astimezone(ZoneInfo('Asia/Ho_Chi_Minh'))
         day, month = local.strftime('%Y-%m-%d'), local.strftime('%Y-%m')
         by_day[day] = by_day.get(day, 0) + 1
         by_month[month] = by_month.get(month, 0) + 1
-        t_name = a.alarm_type.name if a.alarm_type else "Không xác định"
-        d_name = a.source_department.name if a.source_department else "Không xác định"
+        t_name = type_name or "Không xác định"
+        d_name = dept_name or "Không xác định"
         by_type[t_name] = by_type.get(t_name, 0) + 1
         by_dept[d_name] = by_dept.get(d_name, 0) + 1
-        by_status[a.status] = by_status.get(a.status, 0) + 1
+        by_status[status] = by_status.get(status, 0) + 1
 
     # Filter offline events with the exact same date range (Section 28)
     offline_stmt = select(func.count(SystemEvent.id)).where(SystemEvent.event_type == "DEVICE_DISCONNECTED")

@@ -341,6 +341,10 @@ Alarm type trỏ đến receiver group.
 
 Điều này giúp mở rộng từ 50 lên 100+ thiết bị mà không phải sửa logic.
 
+Quan hệ thành viên được quản trị từ giao diện Admin ở **cả hai chiều**: form sửa trạm có ô chọn nhóm, form sửa nhóm có ô chọn trạm. Đây không chỉ là tiện ích — gửi `receiver_group_ids` hay `station_ids` là **ghi đè toàn bộ** quan hệ, nên một form không hiển thị trạng thái hiện tại sẽ âm thầm xóa sạch thành viên mỗi lần bấm Lưu.
+
+`GET /api/receiver-groups` trả về `station_ids` cho mỗi nhóm để form nhóm hiện sẵn các trạm đã gán. Khi `ReceiverGroupOut` xuất hiện lồng trong `StationOut.receiver_groups`, trường này **rỗng có chủ ý**: chỗ đó chỉ cần id nhóm, và nạp thêm trạm cho từng nhóm của mọi trạm là N+1 truy vấn. Cần `station_ids` thì đọc từ `GET /api/receiver-groups`.
+
 ---
 
 # 8. Alarm lifecycle

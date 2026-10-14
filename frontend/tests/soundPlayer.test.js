@@ -8,7 +8,15 @@ beforeEach(() => {
   audios = [];
   globalThis.Audio = class {
     constructor(url) { this.url = url; audios.push(this); }
-    play() { return Promise.resolve(); }
+    play() {
+      // Clip thử (data: URI) tự phát hết rồi bắn 'ended' như trình duyệt thật.
+      // Chỉ clip thử mới tự kết thúc: các tệp còi thật trong test do từng bài tự
+      // điều khiển onended, nên không được bắn hộ.
+      if (typeof this.url === 'string' && this.url.startsWith('data:')) {
+        setTimeout(() => { if (this.onended) this.onended(); }, 0);
+      }
+      return Promise.resolve();
+    }
     pause() { this.paused = true; }
   };
 });
@@ -91,6 +99,49 @@ test('verifyPlayback refuses to claim readiness when the browser blocks playback
   globalThis.Audio.prototype.play = () => Promise.reject(new Error('NotAllowedError'));
   await assert.rejects(soundPlayer.verifyPlayback(), /NotAllowedError/);
   assert.equal(soundPlayer.isAudioReady, false);
+});
+
+// --- Hồi quy: tiếng thử phải NGHE ĐƯỢC ---
+// play() của HTMLAudioElement resolve lúc audio BẮT ĐẦU phát, không phải lúc phát
+// xong. Dừng ngay sau khi play() resolve là cắt tiếng sau vài mili giây: cờ sẵn
+// sàng vẫn đúng, nhưng người bấm TEST LOA không nghe thấy gì và tưởng loa hỏng.
+
+test('verifyPlayback lets the probe tone play out instead of cutting it after a few milliseconds', async () => {
+  const events = [];
+  globalThis.Audio = class {
+    constructor(url) { this.url = url; audios.push(this); }
+    play() {
+      events.push('play-started');
+      setTimeout(() => { events.push('ended'); if (this.onended) this.onended(); }, 0);
+      return Promise.resolve();
+    }
+    pause() { events.push('pause'); this.paused = true; }
+  };
+  soundPlayer.isAudioReady = false;
+  assert.equal(await soundPlayer.verifyPlayback(), true);
+  assert.deepEqual(
+    events,
+    ['play-started', 'ended', 'pause'],
+    'phải để tiếng thử phát hết rồi mới dừng; dừng ngay sau play() thì loa gần như không kêu'
+  );
+  assert.equal(soundPlayer.isAudioReady, true);
+});
+
+test('verifyPlayback still finishes when the probe never reports it ended', async () => {
+  globalThis.Audio = class {
+    constructor(url) { this.url = url; audios.push(this); }
+    play() { return Promise.resolve(); }
+    pause() { this.paused = true; }
+  };
+  soundPlayer.isAudioReady = false;
+  const started = Date.now();
+  assert.equal(await soundPlayer.verifyPlayback(), true);
+  assert.equal(soundPlayer.isAudioReady, true, 'quyền autoplay đã được chứng minh khi play() trả về');
+  assert.ok(
+    Date.now() - started < 5000,
+    'không được treo vô hạn khi trình duyệt không bắn sự kiện ended'
+  );
+  assert.equal(audios[0].paused, true, 'vẫn phải dừng clip thử sau khi chờ');
 });
 
 test('a WebAudio test tone cannot by itself mark the station audio-ready', async () => {

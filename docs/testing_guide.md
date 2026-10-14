@@ -198,6 +198,17 @@ Phát lại outbox: `POST /api/system/outbox/requeue-exhausted` phải có trầ
 
 Trên từng model/profile: reboot/auto-launch `/kiosk`, refresh, mất mạng/reconnect, server restart, Internet disconnected nhưng LAN còn, volume/mute/loa, screen sleep/lock. Alarm phải rõ/touch dismiss dễ với note dài, không che nút; audio local nghe đúng. Ghi thời gian từ power-on đến ready. Lưu credential qua reboot nhưng không lộ UI/log. Chạy soak test qua ca trực thực tế theo thời lượng đơn vị chốt; ghi reconnect/errors/CPU browser/disk server nếu có triệu chứng.
 
+### T14 — Kiểm tra chỉ chạy được trên trình duyệt thật
+
+Các mục dưới đây sửa hành vi phía client mà test tự động chỉ chứng minh được **logic**, không chứng minh được thiết bị. Phải có người đứng tại máy/loa xác nhận.
+
+1. **Tiếng thử loa nghe được.** Bấm TEST LOA ở màn hình trạm. Phải nghe **trọn** tiếng thử (~0,35 giây), không phải một tiếng tách cụt. Trước đây `pause()` được gọi ngay sau khi `play()` trả về — mà `play()` chỉ resolve lúc audio *bắt đầu* phát — nên loa gần như không kêu dù kết luận sẵn sàng vẫn đúng. Thử lại trên tab vừa bị ẩn rồi hiện lại: phép thử phải kết thúc trong vòng **1,5 giây** chứ không treo.
+2. **Bảng giám sát cập nhật ngay sau TEST LOA.** Bấm TEST LOA rồi nhìn bảng Admin: trạng thái audio của trạm phải đổi trong khoảng **một giây**, không phải chờ nhịp tim 5 giây. Thử cả ca **thất bại**: chặn quyền autoplay của trình duyệt rồi bấm TEST LOA — bảng phải chuyển sang chưa sẵn sàng ngay, vì đó là ca cần người xử lý.
+3. **Màn hình trạm không "đã kết nối" giả.** Rút cáp mạng của máy chủ (hoặc tắt Wi-Fi của kiosk ở tầng vật lý — không dùng nút tắt mạng của hệ điều hành, vì cách đó gửi FIN và không tái hiện được socket nửa mở). Trong vòng **15 giây** màn hình trạm phải chuyển sang mất kết nối và **tự thử kết nối lại**, không nằm im ở trạng thái đã kết nối. Trước đây client chỉ gọi `ws.close()` rồi chờ `onclose`, mà socket nửa mở bị trình duyệt giữ ở CLOSING hàng chục giây và không có lượt kết nối lại nào được hẹn. Cắm lại cáp: trạm phải tự trở lại ONLINE, và báo động phát trong lúc mất mạng phải tới được sau khi nối lại.
+4. **Nút Hủy đúng quyền.** Đăng nhập Operator khoa A, phát một báo động, rồi đăng nhập Operator khoa B ở máy khác: báo động đó **không** được có nút Hủy, mà hiện câu "Chỉ Admin hoặc người đã phát mới hủy được". Đăng nhập Admin: nút Hủy phải có. Trước đây nút hiện cho mọi người và chỉ đổ lỗi 403 sau khi bấm.
+5. **Chuỗi âm thanh nhiều tệp.** Trong form mã báo động, gõ hai đường dẫn ở ô văn bản, rồi chọn thêm một tệp ở ô select: cả ba phải còn trong danh sách, đúng thứ tự. Xóa mục giữa, lưu, mở lại form: phải thấy đúng hai tệp còn lại. Trước đây ô select **ghi đè** toàn bộ nội dung vừa gõ.
+6. **Gán trạm vào nhóm ở cả hai form.** Sửa một trạm đang thuộc một nhóm, bấm Lưu mà không đổi gì: tư cách thành viên phải còn nguyên. Mở form sửa nhóm: phải thấy sẵn các trạm đã gán (đánh dấu), thêm/bớt trạm và lưu, rồi kiểm tra lại bằng `GET /api/receiver-groups`. Trước đây cả hai form đều gửi quan hệ hệ thống nhưng không hiện gì, nên mỗi lần Lưu là một lần xóa sạch thành viên.
+
 ## 6. Ma trận baseline acceptance 01–25
 
 | Baseline | Case runbook |
