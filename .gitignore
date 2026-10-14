@@ -31,3 +31,8 @@ htmlcov/
 # Ảnh chụp mã nguồn để đọc ngoài IDE — không phải nguồn thật, không commit.
 full_source.txt
 frontend_nginx.txt
+
+# Thư mục tạm khi chạy kiểm chứng cục bộ (DB test, log, JSON sinh ra khi gọi API CI).
+.tmp-test/
+ci_runs.json
+ci_status.json
