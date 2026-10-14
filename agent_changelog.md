@@ -83,6 +83,7 @@ Bốn lần chạy, cả bốn `completed success`, **không bước nào bị s
 - **Vẫn không đọc được số test cụ thể trong log job backend**: endpoint log của GitHub API trả **403** vì phiên này chưa xác thực GitHub. Bước `pytest tests -v` success là bằng chứng đã có; con số trong CI để trống thay vì suy đoán. Con số **94 passed** là của lần chạy local trên SQLite ở trên, không phải số của CI.
 - Commit `e248e14` (bản ghi changelog này) → run **`38502543399`** (run_number 23), head_sha `e248e14`, `completed success`.
 - Commit `01f46f8` (gộp bản ghi trùng) → run **`38502803462`** (run_number 24), head_sha `01f46f8`, `completed success`.
+- Commit `1ef43d0` (ghi nốt run 24) → run **`38502984384`** (run_number 25), head_sha `1ef43d0`, `completed success`. **Dừng chuỗi ở đây:** mỗi commit tài liệu lại sinh một run mới, nên ghi tiếp bằng chứng của chính commit ghi bằng chứng là vòng lặp vô tận. Run 25 là run cuối được ghi; các commit tài liệu sau đó không cần đối chiếu thêm vì chúng không chạm mã nguồn.
 
 ### Một lần lặp lại đúng lớp lỗi vừa sửa, ngay trong tệp này
 
