@@ -6,35 +6,35 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
-## 2026-10-14 — Sửa hồi quy do chính đợt F-01 gây ra, thêm test chặn lớp lỗi này
+## 2026-10-14 — Sửa hồi quy do chính đợt F-01 gây ra và thêm test chặn lớp lỗi đó
 
-Tiếp nối đợt "Xử lý 12 phát hiện tồn đọng F-01…F-12" ngay dưới, theo yêu cầu "thực hiện xử lý các vấn đề còn tồn tại". Đợt này **không thêm phát hiện mới** — nó xử lý một lỗi do chính đợt trước gây ra, tìm thấy khi tự kiểm tra sau khi đã commit và push.
+Tiếp ngay đợt "Xử lý 12 phát hiện tồn đọng F-01…F-12" ở dưới. Đợt này **không thêm phát hiện mới**: nó sửa một lỗi **do đợt dưới tự gây ra**, tìm thấy khi tự kiểm tra lại sau khi đã commit và push, rồi thêm một lớp kiểm thử để lỗi cùng loại không lọt lại.
 
 ### Lỗi: fieldset "Nhóm nhận tin của trạm" bị render hai lần
 
-Phần giao diện của F-01 được thêm bằng **hai lần Edit có neo khác nhau** (`<p>Trên thiết bị nhận…` và hàng nút submit), và cả hai lần đều chèn cùng một fieldset. Kết quả: modal sửa trạm render khối chọn nhóm nhận **hai lần**, hai bộ checkbox cùng bind vào `stationForm.receiver_group_ids` và cùng đọc `receiverGroups.map`.
+Phần giao diện của F-01 được thêm bằng **hai lần Edit với hai neo khác nhau** (đoạn `<p>Trên thiết bị nhận…` và hàng nút submit `flex space-x-3 pt-3 border-t`), và cả hai lần đều chèn cùng một khối. Kết quả: modal sửa trạm render **hai** fieldset cùng bind vào `stationForm.receiver_group_ids`, cùng `receiverGroups.map`, cùng hậu tố `({g.code})` — chỉ khác `className` và câu chữ ở nhánh rỗng.
 
-Không hỏng dữ liệu — cả hai bộ ghi vào cùng một state nên tick ô này thì ô kia đổi theo — nhưng người dùng thấy hai khối giống nhau và không có cách nào biết khối nào là thật. Đã xóa khối trùng, giữ khối có comment giải thích lý do tồn tại (23 dòng bị xóa, không dòng nào thêm).
+Không hỏng dữ liệu (cả hai cùng ghi một state, nên tick ô này thì ô kia đổi theo), nhưng người dùng thấy hai khối giống nhau và không có cách nào biết khối nào là thật. Đã xóa khối trùng, **giữ khối có comment giải thích lý do tồn tại**, xóa 23 dòng.
 
-**Điểm đáng ghi lại:** lỗi này lọt qua **cả `npm test` lẫn `npm run build`**. React render hai khối giống nhau không sinh cảnh báo, và build chỉ kiểm cú pháp. Nó chỉ lộ ra khi đọc lại mã nguồn — tức là loại lỗi mà bộ kiểm thử hiện có mù hoàn toàn.
+**Điều đáng ghi lại:** lỗi này lọt qua **cả `npm test` lẫn `npm run build`**. React render hai nhánh giống nhau không sinh cảnh báo, và build chỉ kiểm cú pháp. Nó chỉ lộ ra khi đọc lại mã nguồn — tức là một lớp lỗi mà hạ tầng kiểm thử hiện có **mù hoàn toàn**.
 
-### Bổ sung test chặn lớp lỗi này
+### Thêm test chặn lớp lỗi này
 
-`frontend/tests/jsxDuplicateLegend.test.js` — test tĩnh, không cần trình duyệt: quét mọi file `.jsx`/`.js` trong `frontend/src/`, rút **phần chữ người dùng nhìn thấy** của từng `<legend>` (bỏ biểu thức `{…}`, bỏ thẻ con, gộp khoảng trắng), rồi khẳng định không nhãn nào xuất hiện hai lần trong cùng một file.
+`frontend/tests/jsxDuplicateLegend.test.js` — test **tĩnh**, không cần trình duyệt: quét mọi file `.jsx`/`.js` trong `frontend/src/`, rút **phần chữ người dùng nhìn thấy** của từng `<legend>` (bỏ biểu thức `{…}`, bỏ thẻ con, gộp khoảng trắng — nên hai thẻ chỉ khác `className` vẫn bị coi là trùng), rồi khẳng định không nhãn nào xuất hiện hai lần trong cùng một file.
 
 Test có hai bài **tự kiểm** để không xanh một cách vô nghĩa:
-- một bài xác nhận bộ dò **thật sự nhìn thấy** các legend đang có trong `AdminDashboard.jsx` (nếu regex hỏng, bài này đỏ chứ không phải bài chính xanh giả);
+- một bài khẳng định bộ dò **thật sự nhìn thấy** legend `Nhóm nhận tin của trạm` đang có trong `AdminDashboard.jsx` — nếu regex hỏng, bài này đỏ chứ không để bài chính xanh giả;
 - một bài chạy bộ dò trên một đoạn JSX nhân đôi cố ý và khẳng định nó đếm ra 2.
 
-### Kiểm tra thêm: các khối lặp khác có phải lỗi không
+### Kiểm tra thêm: các khối lặp còn lại có phải lỗi không
 
-Đã quét thêm toàn bộ khối 6 dòng liên tiếp lặp lại trong ba file vừa sửa. Kết quả: các khối lặp còn lại đều là **boilerplate dùng chung giữa các modal khác nhau** — hàng nút submit (`flex space-x-3 pt-3 border-t`), khung bọc bảng (`overflow-x-auto` + `<table>`), lưới `grid grid-cols-2 gap-3`. Đó là cấu trúc lặp bình thường, không phải lỗi sao chép. Không sửa gì thêm; ghi ra đây để lần sau không ai đọc con số đó thành "còn 20 khối trùng chưa xử lý".
+Đã quét toàn bộ khối 6 dòng liên tiếp lặp lại trong `AdminDashboard.jsx`. Kết quả: các khối lặp còn lại đều là **boilerplate dùng chung giữa các modal khác nhau** — hàng nút submit, khung bọc bảng (`overflow-x-auto` + `<table>`), lưới `grid grid-cols-2 gap-3`. Đó là cấu trúc lặp bình thường, không phải lỗi sao chép. Không sửa gì thêm; ghi ra đây để lần sau không ai đọc con số đó thành "còn N khối trùng chưa xử lý".
 
 ### File đã sửa
 
 - `frontend/src/pages/AdminDashboard.jsx` — xóa fieldset `Nhóm nhận tin của trạm` bị lặp trong modal sửa trạm.
 - `frontend/tests/jsxDuplicateLegend.test.js` — **mới**, 3 test.
-- `.gitignore` — bỏ qua `.tmp-test/`, `ci_runs.json`, `ci_status.json` (file sinh ra khi kiểm chứng cục bộ và khi gọi API CI, không phải nguồn).
+- `.gitignore` — bỏ qua `.tmp-test/`, `ci_runs.json`, `ci_status.json` (file sinh ra khi kiểm chứng cục bộ và khi gọi API CI; trước đây hiện là untracked trong `git status`).
 
 ### Bằng chứng thực chạy
 
@@ -52,9 +52,9 @@ ENVIRONMENT=test DEMO_MODE=true N8N_ENABLED=false \
 ../venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
 # → 94 passed, 4 warnings in 72.33s
 
-# Xác nhận bộ dò legend thật sự nhìn thấy legend đang có
+# Legend trùng đã hết: đúng một dòng
 grep -n "Nhóm nhận tin của trạm" frontend/src/pages/AdminDashboard.jsx
-# → 1454 (một dòng duy nhất; trước khi sửa: 1454 và 1477)
+# → 1454 (trước khi sửa: 1454 và 1477)
 ```
 
 ### Kiểm chứng ngược — test mới có thật sự bắt được lỗi
@@ -71,22 +71,29 @@ Nhân đôi chính dòng `<legend …>Nhóm nhận tin của trạm</legend>` tr
 
 ### Bằng chứng CI
 
-Hai commit, hai lần chạy, cả hai đều `completed success`, **không bước nào bị skip**:
+Hai lần chạy, cả hai `completed success`, **không bước nào bị skip**:
 
-- Commit `4717963` (xóa fieldset trùng) → run **`38501937863`** (run_number 21), head_sha `4717963`, tạo `2026-10-14T02:36:43Z`.
-- Commit `b8ac972` (test chặn legend trùng + `.gitignore`) → run **`38502180059`** (run_number 22), head_sha `b8ac972`. Đối chiếu từng bước:
+- Commit `2c4fd4f` (đợt F-01…F-12) → run **`38501695940`** (run_number 20), head_sha `2c4fd4f`, tạo `2026-10-14T02:33:57Z`, `completed success`.
+- Commit `4717963` (xóa fieldset lặp) → run **`38501937863`** (run_number 21), head_sha `4717963`, tạo `2026-10-14T02:36:43Z`, `completed success`.
+- Commit `b8ac972` (test chặn legend trùng + `.gitignore`) → run **`38502180059`** (run_number 22), head_sha `b8ac972`, `completed success`. Đối chiếu **từng bước**:
   - `backend` (12 bước): `Initialize containers` (PostgreSQL 16), `Create live transport database`, `alembic upgrade head`, `pytest tests -v` — success.
-  - `frontend` (9 bước): `npm ci`, `npm test`, `npm run build` — success. **Đây là lần đầu test `jsxDuplicateLegend` chạy trên CI.**
+  - `frontend` (9 bước): `npm ci`, `npm test`, `npm run build` — success. **Đây là lần đầu `jsxDuplicateLegend` chạy trên CI.**
   - `docker` (6 bước): build `backend/Dockerfile` và `nginx/Dockerfile` — success.
   - Run URL: <https://github.com/buinguyenhong/REDCODETHIENHANH/actions/runs/38502180059>
-- Run **`38501695940`** (run_number 20, head `2c4fd4f`, đợt F-01…F-12) cũng `completed success`. Ghi lại đây vì changelog của đợt đó chưa kịp ghi kết quả CI; lưu ý run này **đã bị hai commit trên vượt qua**.
 - **Vẫn không đọc được số test cụ thể trong log job backend**: endpoint log của GitHub API trả **403** vì phiên này chưa xác thực GitHub. Bước `pytest tests -v` success là bằng chứng đã có; con số trong CI để trống thay vì suy đoán. Con số **94 passed** là của lần chạy local trên SQLite ở trên, không phải số của CI.
+- Commit `e248e14` (bản ghi changelog này) → run **`38502543399`** (run_number 23), head_sha `e248e14`, `completed success`.
+
+### Một lần lặp lại đúng lớp lỗi vừa sửa, ngay trong tệp này
+
+Bản ghi này ban đầu được thêm vào `agent_changelog.md` bằng một lần Edit, rồi chỉnh lại bằng một lần Edit thứ hai có neo là **chính dòng tiêu đề `## 2026-10-14 — Xử lý 12 phát hiện tồn đọng F-01…F-12`**. Vì bản ghi đầu đã nằm **phía trên** dòng neo đó, lần Edit thứ hai chèn bản mới vào giữa và để lại **hai bản ghi trùng tiêu đề** (dòng 9 và dòng 91).
+
+Cùng một cơ chế đã gây ra lỗi fieldset ở `AdminDashboard.jsx`: hai lần Edit, neo không loại trừ nhau, không có gì báo lỗi. Lần này phát hiện bằng `grep -n "^## 2026-10-14"` và đã xóa bản trùng — nhưng đáng ghi lại vì nó cho thấy **cách sửa chưa chạm tới nguyên nhân**: test `jsxDuplicateLegend` chỉ quét `.jsx`/`.js` trong `frontend/src/`, nên **không phủ tài liệu Markdown**. Với tệp chỉ được đọc bởi người, một bản ghi trùng gây khó chịu chứ không gây hại như một ô nhập trùng trên màn hình trực; nhưng nếu sau này có bước sinh tài liệu tự động, đây là chỗ cần một phép kiểm tương tự.
 
 ### Giới hạn
 
-- **Đây là test tĩnh, không phải test hành vi.** Nó chặn được đúng lớp lỗi vừa xảy ra (một khối JSX bị render hai lần với cùng nhãn hiển thị) nhưng **không** chứng minh giao diện chạy đúng. Các phần giao diện của F-01 (F-02 nửa gửi trạng thái, F-05 render, F-07 dây nối, F-08 dây nối) **vẫn chưa có test hành vi** — nguyên trạng như ghi ở mục Giới hạn của đợt dưới.
-- **Bộ dò chỉ nhìn `<legend>`.** Một khối bị nhân đôi mà không có `<legend>` (ví dụ hai `<table>` cùng tiêu đề) sẽ lọt. Chọn phạm vi hẹp là chủ ý: mở rộng sang mọi khối JSX lặp lại sẽ báo động giả trên đúng loại boilerplate dùng chung giữa các modal đã liệt kê ở trên, và một test hay báo động giả sẽ bị bỏ qua.
-- **Chưa kiểm chứng trên thiết bị thật** và **chưa dựng stack Docker** trong đợt này — giữ nguyên như đợt dưới.
+- **Đây là test tĩnh, không phải test hành vi.** Nó chặn đúng lớp lỗi vừa xảy ra (một khối JSX bị render hai lần với cùng nhãn hiển thị) nhưng **không** chứng minh giao diện chạy đúng. Các phần giao diện của F-01/F-02/F-05/F-07/F-08 **vẫn chưa có test hành vi** — nguyên trạng như mục Giới hạn của đợt dưới.
+- **Bộ dò chỉ nhìn `<legend>`.** Một khối bị nhân đôi mà không có `<legend>` (ví dụ hai `<table>` cùng tiêu đề) sẽ lọt. Phạm vi hẹp là chủ ý: mở sang mọi khối JSX lặp lại sẽ báo động giả trên đúng loại boilerplate đã liệt kê ở trên, và một test hay báo động giả sẽ bị người đọc bỏ qua.
+- **Chưa kiểm chứng trên thiết bị thật** và **chưa dựng stack Docker** trong đợt này.
 
 ## 2026-10-14 — Xử lý 12 phát hiện tồn đọng F-01…F-12
 
