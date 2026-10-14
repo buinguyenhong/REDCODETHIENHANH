@@ -71,7 +71,7 @@ Nhân đôi chính dòng `<legend …>Nhóm nhận tin của trạm</legend>` tr
 
 ### Bằng chứng CI
 
-Hai lần chạy, cả hai `completed success`, **không bước nào bị skip**:
+Bốn lần chạy, cả bốn `completed success`, **không bước nào bị skip**:
 
 - Commit `2c4fd4f` (đợt F-01…F-12) → run **`38501695940`** (run_number 20), head_sha `2c4fd4f`, tạo `2026-10-14T02:33:57Z`, `completed success`.
 - Commit `4717963` (xóa fieldset lặp) → run **`38501937863`** (run_number 21), head_sha `4717963`, tạo `2026-10-14T02:36:43Z`, `completed success`.
@@ -82,6 +82,7 @@ Hai lần chạy, cả hai `completed success`, **không bước nào bị skip*
   - Run URL: <https://github.com/buinguyenhong/REDCODETHIENHANH/actions/runs/38502180059>
 - **Vẫn không đọc được số test cụ thể trong log job backend**: endpoint log của GitHub API trả **403** vì phiên này chưa xác thực GitHub. Bước `pytest tests -v` success là bằng chứng đã có; con số trong CI để trống thay vì suy đoán. Con số **94 passed** là của lần chạy local trên SQLite ở trên, không phải số của CI.
 - Commit `e248e14` (bản ghi changelog này) → run **`38502543399`** (run_number 23), head_sha `e248e14`, `completed success`.
+- Commit `01f46f8` (gộp bản ghi trùng) → run **`38502803462`** (run_number 24), head_sha `01f46f8`, `completed success`.
 
 ### Một lần lặp lại đúng lớp lỗi vừa sửa, ngay trong tệp này
 
