@@ -1450,29 +1450,6 @@ export default function AdminDashboard() {
                   ``stationForm.receiver_group_ids`` vẫn được gửi đi: mở form sửa một
                   trạm đang thuộc nhóm rồi bấm Lưu là xóa sạch tư cách thành viên của
                   trạm đó mà không ai thấy mình vừa làm gì. */}
-              <fieldset className="border border-slate-300 p-3">
-                <legend className="text-slate-600 font-bold uppercase px-1">Nhóm nhận tin của trạm</legend>
-                {receiverGroups.length === 0 ? (
-                  <p className="text-slate-500 font-sans">Chưa có nhóm nhận nào. Tạo nhóm trước nếu muốn gom trạm này vào một nhóm.</p>
-                ) : (
-                  receiverGroups.map((g) => (
-                    <label key={g.id} className="block py-1">
-                      <input
-                        type="checkbox"
-                        checked={stationForm.receiver_group_ids.includes(g.id)}
-                        onChange={(e) => setStationForm({
-                          ...stationForm,
-                          receiver_group_ids: e.target.checked
-                            ? [...stationForm.receiver_group_ids, g.id]
-                            : stationForm.receiver_group_ids.filter((id) => id !== g.id),
-                        })}
-                      />{' '}
-                      {g.name} <span className="text-slate-500">({g.code})</span>
-                    </label>
-                  ))
-                )}
-              </fieldset>
-
               <fieldset className="border border-slate-300 rounded-lg p-3">
                 <legend className="px-1 font-bold text-slate-600 uppercase">Nhóm nhận tin của trạm</legend>
                 {receiverGroups.length === 0 ? (
