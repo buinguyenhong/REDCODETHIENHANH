@@ -121,14 +121,14 @@ export default function AdminDashboard() {
   const loadMonitorData = async () => {
     try {
       const [stData, hData, sysData] = await Promise.all([
-        api.getStations(),
+        api.getStations(null, true),
         api.getHealth(),
         // /system/status là endpoint ADMIN: cho biết còn bao nhiêu thông báo n8n đã
         // bỏ hẳn. Không có nó, một thông báo gửi thất bại vĩnh viễn không hiện ra ở
         // đâu cả ngoài bảng system_events.
         api.getSystemStatus().catch(() => null),
       ]);
-      setStations(stData);
+      setStations((stData || []).filter((s) => s.enabled !== false));
       setHealth(hData);
       setOutbox(sysData?.notification_outbox || null);
     } catch (e) {
@@ -139,17 +139,17 @@ export default function AdminDashboard() {
   const loadConfigData = async () => {
     try {
       const [dData, uData, atData, rgData, auData] = await Promise.all([
-        api.getDepartments(),
-        api.getUsers(),
-        api.getAlarmTypes(),
-        api.getReceiverGroups(),
-        api.getAudioFiles(),
+        api.getDepartments(true),
+        api.getUsers(null, true),
+        api.getAlarmTypes(true),
+        api.getReceiverGroups(true),
+        api.getAudioFiles(true),
       ]);
-      setDepartments(dData);
-      setUsersList(uData);
-      setAlarmTypes(atData);
-      setReceiverGroups(rgData);
-      setAudioFiles(auData);
+      setDepartments((dData || []).filter((d) => d.enabled !== false));
+      setUsersList((uData || []).filter((u) => u.enabled !== false));
+      setAlarmTypes((atData || []).filter((at) => at.enabled !== false));
+      setReceiverGroups((rgData || []).filter((rg) => rg.enabled !== false));
+      setAudioFiles((auData || []).filter((af) => af.enabled !== false));
     } catch (e) {
       console.error('Lỗi tải cấu hình:', e);
     }
@@ -234,7 +234,7 @@ export default function AdminDashboard() {
         repeat_count: parseInt(alarmTypeForm.repeat_count, 10),
         repeat_interval_ms: parseInt(alarmTypeForm.repeat_interval_ms, 10),
         validity_seconds: Number(alarmTypeForm.validity_seconds),
-        enabled: true,
+        enabled: editItem ? editItem.enabled !== false : true,
         allowed_department_ids: alarmTypeForm.allowed_department_ids,
       };
 
@@ -303,9 +303,8 @@ export default function AdminDashboard() {
         await api.updateStation(editItem.id, payload);
         notify(`Đã cập nhật trạm nhận ${payload.station_code}`);
       } else {
-        const res = await api.registerStation(payload);
-        notify('Trạm đã tạo. Mở màn hình trạm nhận trên thiết bị và đăng nhập Admin để xác nhận.');
-        notify(`Đã đăng ký trạm nhận mới ${payload.station_code}`);
+        await api.registerStation(payload);
+        notify(`Đã đăng ký trạm nhận mới ${payload.station_code}. Mở màn hình trạm nhận trên thiết bị và đăng nhập Admin để xác nhận.`);
       }
       setModalType(null);
       loadMonitorData();
@@ -399,7 +398,7 @@ export default function AdminDashboard() {
         display_name: userForm.display_name.trim(),
         department_id: userForm.department_id ? parseInt(userForm.department_id, 10) : null,
         role: userForm.role,
-        enabled: true,
+        enabled: editItem ? editItem.enabled !== false : true,
       };
       if (userForm.password) payload.password = userForm.password;
 
@@ -467,7 +466,7 @@ export default function AdminDashboard() {
         name: groupForm.name.trim(),
         description: groupForm.description.trim(),
         station_ids: groupForm.station_ids?.map((id) => parseInt(id, 10)),
-        enabled: true,
+        enabled: editItem ? editItem.enabled !== false : true,
       };
 
       if (editItem) {
@@ -724,7 +723,7 @@ export default function AdminDashboard() {
                           </span>
                         </td>
                         <td className="py-3 px-4 text-slate-500">
-                          {st.last_seen_at ? new Date(st.last_seen_at).toLocaleTimeString('vi-VN') : 'Chưa kết nối'}
+                          {st.last_seen_at ? new Date(st.last_seen_at).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : 'Chưa kết nối'}
                         </td>
                         <td className="py-3 px-4 text-center">
                           <button
@@ -1050,7 +1049,7 @@ export default function AdminDashboard() {
                         </span>
                       </td>
                       <td className="py-3 px-4 text-slate-500">
-                        {u.last_login_at ? new Date(u.last_login_at).toLocaleString('vi-VN') : 'Chưa đăng nhập'}
+                        {u.last_login_at ? new Date(u.last_login_at).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : 'Chưa đăng nhập'}
                       </td>
                       <td className="py-3 px-4 text-center">
                         <div className="flex items-center justify-center space-x-2">
@@ -1153,7 +1152,7 @@ export default function AdminDashboard() {
                     return (
                       <tr key={ev.id} className="hover:bg-slate-50">
                         <td className="py-2 px-4 text-slate-500 whitespace-nowrap">
-                          {new Date(ev.created_at).toLocaleString('vi-VN')}
+                          {new Date(ev.created_at).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}
                         </td>
                         <td className="py-2 px-4 font-bold text-slate-900">{ev.event_type}</td>
                         <td className="py-2 px-4">

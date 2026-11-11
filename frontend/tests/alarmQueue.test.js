@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeAlarmQueue, alarmsToAcknowledge } from '../src/utils/alarmQueue.js';
+import {
+  mergeAlarmQueue,
+  alarmsToAcknowledge,
+  createHeadAlarmTracker,
+  recordHeadAudioStarted,
+  recordHeadAudioCompleted,
+  recordHeadAudioFailed,
+  flushHeadAlarmEvents,
+} from '../src/utils/alarmQueue.js';
 
 const alarm = (id, seq = id, extra = {}) => ({ alarm_id: id, server_sequence: seq, expires_at: '2026-10-07T01:00:00Z', ...extra });
 const now = Date.parse('2026-10-07T00:00:00Z');
@@ -43,4 +51,46 @@ test('locally dismissed alarm is not acknowledged on the next sync', () => {
   const serverAlarms = [alarm(4), alarm(5)];
   const merged = mergeAlarmQueue([], serverAlarms, dismissed, now);
   assert.deepEqual(alarmsToAcknowledge(serverAlarms, merged), [4]);
+});
+
+// --- Hồi quy: chuyển báo động đầu hàng đợi khi rớt mạng rồi kết nối lại ---
+
+test('offline queue transition flushes DISPLAYED and AUDIO_STARTED in monotonic order on reconnect', () => {
+  const sent = [];
+  const closedSocket = { readyState: 3, send: (msg) => sent.push(JSON.parse(msg)) };
+  const openSocket = { readyState: 1, send: (msg) => sent.push(JSON.parse(msg)) };
+
+  // Trạm chuyển sang báo động 22 khi WebSocket đang đóng: đã hiển thị và bắt đầu kêu.
+  const tracker = createHeadAlarmTracker(22);
+  assert.deepEqual(flushHeadAlarmEvents(closedSocket, tracker, 'ST-CC-01'), []);
+  recordHeadAudioStarted(tracker, 22);
+  assert.deepEqual(flushHeadAlarmEvents(closedSocket, tracker, 'ST-CC-01'), []);
+  assert.equal(sent.length, 0);
+
+  // Khi kết nối lại và synchronize() đã gửi RECEIVED, xả bù phải đi theo thứ tự
+  // DISPLAYED -> AUDIO_STARTED và không gửi trùng ở lần gọi tiếp theo.
+  flushHeadAlarmEvents(openSocket, tracker, 'ST-CC-01');
+  assert.deepEqual(sent.map(f => f.event_type), ['DISPLAYED', 'AUDIO_STARTED']);
+  assert.deepEqual(flushHeadAlarmEvents(openSocket, tracker, 'ST-CC-01'), []);
+
+  // Khi còi phát xong, chỉ gửi thêm AUDIO_COMPLETED.
+  recordHeadAudioCompleted(tracker, 22);
+  flushHeadAlarmEvents(openSocket, tracker, 'ST-CC-01');
+  assert.deepEqual(sent.map(f => f.event_type), ['DISPLAYED', 'AUDIO_STARTED', 'AUDIO_COMPLETED']);
+});
+
+test('audio retry on same head alarm preserves displayedSent and sends AUDIO_STARTED after AUDIO_FAILED', () => {
+  const sent = [];
+  const openSocket = { readyState: 1, send: (msg) => sent.push(JSON.parse(msg)) };
+
+  let tracker = createHeadAlarmTracker(33);
+  recordHeadAudioFailed(tracker, 33, 'Autoplay blocked');
+  flushHeadAlarmEvents(openSocket, tracker, 'ST-ICU-01');
+  assert.deepEqual(sent.map(f => f.event_type), ['DISPLAYED', 'AUDIO_FAILED']);
+
+  // Người trực bấm mở khóa âm thanh cho cùng báo động 33: không gửi lại DISPLAYED.
+  tracker = createHeadAlarmTracker(33, tracker);
+  recordHeadAudioStarted(tracker, 33);
+  flushHeadAlarmEvents(openSocket, tracker, 'ST-ICU-01');
+  assert.deepEqual(sent.map(f => f.event_type), ['DISPLAYED', 'AUDIO_FAILED', 'AUDIO_STARTED']);
 });

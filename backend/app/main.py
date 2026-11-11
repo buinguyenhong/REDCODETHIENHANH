@@ -108,11 +108,30 @@ app.add_middleware(
 
 app.include_router(api_router, prefix="/api")
 
+def _is_configuration_mutation(method: str, path: str) -> bool:
+    if method not in ('POST', 'PUT', 'DELETE'):
+        return False
+    configuration = (
+        '/api/users',
+        '/api/departments',
+        '/api/alarm-types',
+        '/api/receiver-groups',
+        '/api/audio',
+        '/api/stations/register',
+    )
+    if path.startswith(configuration):
+        return True
+    # Sửa / xóa trạm nhận (PUT / DELETE /api/stations/{id}) cũng là thay đổi cấu
+    # hình quản trị và phải được ghi CONFIGURATION_CHANGED như các danh mục khác.
+    if path.startswith('/api/stations/') and method in ('PUT', 'DELETE'):
+        return True
+    return False
+
+
 @app.middleware('http')
 async def configuration_audit(request, call_next):
     response = await call_next(request)
-    configuration = ('/api/users', '/api/departments', '/api/alarm-types', '/api/receiver-groups', '/api/audio', '/api/stations/register')
-    if request.method in ('POST', 'PUT', 'DELETE') and response.status_code < 400 and request.url.path.startswith(configuration):
+    if response.status_code < 400 and _is_configuration_mutation(request.method, request.url.path):
         authorization = request.headers.get('authorization', '')
         payload = decode_access_token(authorization[7:]) if authorization.startswith('Bearer ') else None
         try:
@@ -150,6 +169,7 @@ async def station_has_unresolved_alarms(station_code: str) -> bool:
     phải được nhắc tải lại, nếu không việc phục hồi phụ thuộc hoàn toàn vào việc
     client tự giác gọi sync.
     """
+    now = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as session:
         row = (await session.execute(
             select(AlarmStationState.id)
@@ -158,6 +178,7 @@ async def station_has_unresolved_alarms(station_code: str) -> bool:
             .where(
                 Station.station_code == station_code,
                 Alarm.status == AlarmStatus.ACTIVE.value,
+                (Alarm.expires_at == None) | (Alarm.expires_at > now),
                 AlarmStationState.state != StationAlarmStateEnum.DISMISSED.value,
             )
         )).scalars().first()
@@ -266,8 +287,20 @@ async def websocket_endpoint(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }))
                         if _pending_sync_check_due(station_code):
+                            now_utc = datetime.now(timezone.utc)
                             async with AsyncSessionLocal() as session:
-                                pending = (await session.execute(select(AlarmStationState.id).join(Station).join(Alarm, Alarm.id == AlarmStationState.alarm_id).where(Station.station_code == station_code, Alarm.status == AlarmStatus.ACTIVE.value, AlarmStationState.received_at == None))).scalars().first()
+                                pending = (await session.execute(
+                                    select(AlarmStationState.id)
+                                    .join(Station, Station.id == AlarmStationState.station_id)
+                                    .join(Alarm, Alarm.id == AlarmStationState.alarm_id)
+                                    .where(
+                                        Station.station_code == station_code,
+                                        Alarm.status == AlarmStatus.ACTIVE.value,
+                                        (Alarm.expires_at == None) | (Alarm.expires_at > now_utc),
+                                        AlarmStationState.state == StationAlarmStateEnum.PENDING.value,
+                                        AlarmStationState.received_at == None,
+                                    )
+                                )).scalars().first()
                             if pending:
                                 await websocket.send_text(json.dumps({'type': 'SYNC_REQUIRED'}))
 
@@ -303,9 +336,11 @@ async def websocket_endpoint(
             logger.error(f"WebSocket station error ({station_code}): {e}")
             await manager.disconnect_station(station_code, websocket)
         finally:
-            # Hạn kiểm tra gắn với một phiên kết nối, không phải với mã trạm: dọn ở
-            # đây để sổ trong bộ nhớ không giữ lại mã của trạm đã tháo máy.
-            _last_pending_sync_check.pop(station_code, None)
+            # Hạn kiểm tra gắn với một phiên kết nối, không phải với mã trạm: chỉ
+            # xóa khi không có phiên mới nào đang giữ mã trạm này (tránh việc
+            # phiên cũ đóng muộn xóa mất mốc vừa đặt của phiên mới).
+            if manager.active_stations.get(station_code) is None:
+                _last_pending_sync_check.pop(station_code, None)
 
     elif actual_type == "dashboard":
         # Strictly authenticate dashboard token

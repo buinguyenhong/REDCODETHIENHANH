@@ -58,7 +58,7 @@ async def create_alarm_type(
 
     if type_in.receiver_group_id:
         rg = await db.get(ReceiverGroup, type_in.receiver_group_id)
-        if not rg:
+        if not rg or not rg.enabled:
             raise HTTPException(status_code=400, detail="Nhóm nhận không hợp lệ")
 
     alarm_type = AlarmType(
@@ -81,7 +81,9 @@ async def create_alarm_type(
 
     stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group), selectinload(AlarmType.department_permissions)).where(AlarmType.id == alarm_type.id).execution_options(populate_existing=True)
     created = (await db.execute(stmt)).scalar_one()
-    return AlarmTypeOut.model_validate(created)
+    output = AlarmTypeOut.model_validate(created)
+    output.allowed_department_ids = [permission.department_id for permission in created.department_permissions if permission.enabled]
+    return output
 
 @router.put("/{type_id}", response_model=AlarmTypeOut)
 async def update_alarm_type(
@@ -94,7 +96,13 @@ async def update_alarm_type(
     if not alarm_type:
         raise HTTPException(status_code=404, detail="Không tìm thấy loại báo động")
 
-    for field, value in type_in.model_dump(exclude_unset=True).items():
+    updates = type_in.model_dump(exclude_unset=True)
+    if updates.get('receiver_group_id') is not None:
+        rg = await db.get(ReceiverGroup, updates['receiver_group_id'])
+        if not rg or not rg.enabled:
+            raise HTTPException(status_code=400, detail="Nhóm nhận không hợp lệ")
+
+    for field, value in updates.items():
         if field != 'allowed_department_ids':
             setattr(alarm_type, field, value)
 
@@ -106,7 +114,9 @@ async def update_alarm_type(
 
     stmt = select(AlarmType).options(selectinload(AlarmType.receiver_group), selectinload(AlarmType.department_permissions)).where(AlarmType.id == alarm_type.id).execution_options(populate_existing=True)
     updated = (await db.execute(stmt)).scalar_one()
-    return AlarmTypeOut.model_validate(updated)
+    output = AlarmTypeOut.model_validate(updated)
+    output.allowed_department_ids = [permission.department_id for permission in updated.department_permissions if permission.enabled]
+    return output
 
 @router.get("/{type_id}/permissions", response_model=List[DepartmentAlarmPermissionOut])
 async def get_alarm_type_permissions(

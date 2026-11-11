@@ -95,38 +95,40 @@ export default function Login() {
           </button>
         </form>
 
-        {/* Shortcut Demo Accounts */}
-        <div className="mt-8 pt-6 border-t border-slate-100">
-          <p className="text-xs font-mono text-slate-400 mb-3 text-center uppercase tracking-wider">
-            Tài khoản mẫu thử nghiệm:
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => setPreset('admin', 'admin123456')}
-              className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
-            >
-              <span className="font-bold text-red-600 block">Admin</span>
-              admin
-            </button>
-            <button
-              type="button"
-              onClick={() => setPreset('operator_cc', 'pass123456')}
-              className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
-            >
-              <span className="font-bold text-amber-600 block">Cấp Cứu</span>
-              operator_cc
-            </button>
-            <button
-              type="button"
-              onClick={() => setPreset('operator_hscc', 'pass123456')}
-              className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
-            >
-              <span className="font-bold text-blue-600 block">Hồi Sức</span>
-              operator_hscc
-            </button>
+        {/* Shortcut Demo Accounts — chỉ hiển thị ở môi trường phát triển hoặc khi bật VITE_DEMO_MODE */}
+        {(import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true') && (
+          <div className="mt-8 pt-6 border-t border-slate-100">
+            <p className="text-xs font-mono text-slate-400 mb-3 text-center uppercase tracking-wider">
+              Tài khoản mẫu thử nghiệm:
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setPreset('admin', 'admin123456')}
+                className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
+              >
+                <span className="font-bold text-red-600 block">Admin</span>
+                admin
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreset('operator_cc', 'pass123456')}
+                className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
+              >
+                <span className="font-bold text-amber-600 block">Cấp Cứu</span>
+                operator_cc
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreset('operator_hscc', 'pass123456')}
+                className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-center text-slate-700 transition"
+              >
+                <span className="font-bold text-blue-600 block">Hồi Sức</span>
+                operator_hscc
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

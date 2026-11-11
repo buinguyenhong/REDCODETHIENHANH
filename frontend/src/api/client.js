@@ -66,8 +66,13 @@ export const api = {
     apiRequest(`/departments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
   // Users
-  getUsers: (deptId) =>
-    apiRequest(`/users${deptId ? `?department_id=${deptId}` : ''}`),
+  getUsers: (deptId, enabledOnly = false) => {
+    const params = new URLSearchParams();
+    if (deptId) params.append('department_id', deptId);
+    if (enabledOnly) params.append('enabled_only', 'true');
+    const qs = params.toString();
+    return apiRequest(`/users${qs ? `?${qs}` : ''}`);
+  },
   createUser: (data) =>
     apiRequest('/users', { method: 'POST', body: JSON.stringify(data) }),
   updateUser: (id, data) =>
@@ -76,8 +81,13 @@ export const api = {
   // Stations
   activateStation: (data) => apiRequest('/stations/activate', { method: 'POST', body: JSON.stringify(data) }),
   confirmDevice: (id) => apiRequest(`/stations/${id}/confirm-device`, { method: 'POST' }),
-  getStations: (statusFilter) =>
-    apiRequest(`/stations${statusFilter ? `?status_filter=${statusFilter}` : ''}`),
+  getStations: (statusFilter, enabledOnly = false) => {
+    const params = new URLSearchParams();
+    if (statusFilter) params.append('status_filter', statusFilter);
+    if (enabledOnly) params.append('enabled_only', 'true');
+    const qs = params.toString();
+    return apiRequest(`/stations${qs ? `?${qs}` : ''}`);
+  },
   getStation: (id) => apiRequest(`/stations/${id}`),
   getStationActiveAlarms: (stationCode, token) =>
     apiRequest(`/stations/${stationCode}/active-alarms`, {
@@ -133,7 +143,8 @@ export const api = {
   },
 
   // Audio
-  getAudioFiles: () => apiRequest('/audio'),
+  getAudioFiles: (enabledOnly = false) =>
+    apiRequest(`/audio${enabledOnly ? '?enabled_only=true' : ''}`),
   uploadAudio: (formData) =>
     apiRequest('/audio/upload', {
       method: 'POST',

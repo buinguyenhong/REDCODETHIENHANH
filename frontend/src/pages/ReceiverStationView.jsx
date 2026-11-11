@@ -56,7 +56,23 @@ export default function ReceiverStationView() {
       <section className="bg-white border p-6 space-y-4"><h2 className="text-xl font-bold">{stationConfig && isConnected ? 'TRẠM ĐÃ KẾT NỐI' : 'TRẠM CHƯA SẴN SÀNG'}</h2><p>Kết nối: {isConnected && stationConfig ? 'ONLINE' : activationError ? 'BỊ MÁY CHỦ TỪ CHỐI — CẦN XÁC NHẬN LẠI THIẾT BỊ' : 'OFFLINE / CHƯA XÁC NHẬN'} · Âm thanh: {audioReady ? 'READY' : 'CHƯA KIỂM TRA'}</p><p>User: {user?.display_name || 'Receiver tự động'} {user?.department?.name}</p>
         <div className="flex flex-wrap gap-3">{[['sound', 'TEST LOA'], ['display', 'TEST HIỂN THỊ'], ['connection', 'TEST KẾT NỐI']].map(([kind, label]) => <button key={kind} disabled={!stationConfig || !!currentAlarm} className="border border-slate-400 px-4 py-3 disabled:opacity-40" onClick={() => test(kind)}>{label}</button>)}<button className="border px-4 py-3" onClick={() => document.documentElement.requestFullscreen().catch(error => setMessage(error.message))}>TOÀN MÀN HÌNH</button></div>
         {currentAlarm && <p>Có cảnh báo thật: tạm khóa thao tác test.</p>}
-        {user?.role === 'ADMIN' && stationConfig && <button className="underline" onClick={() => setChangeDevice(!changeDevice)}>Đổi / xác nhận lại trạm</button>}
+        {user?.role === 'ADMIN' && stationConfig && (
+          <div className="flex flex-wrap gap-4">
+            <button className="underline" onClick={() => setChangeDevice(!changeDevice)}>Đổi / xác nhận lại trạm</button>
+            <button
+              className="underline text-red-700"
+              onClick={() => {
+                if (window.confirm(`Gỡ cấu hình trạm ${stationConfig.station_code} khỏi trình duyệt này?`)) {
+                  saveStationConfig(null);
+                  setChangeDevice(false);
+                  setMessage('Đã gỡ cấu hình trạm khỏi thiết bị này.');
+                }
+              }}
+            >
+              Gỡ cấu hình trạm khỏi máy này
+            </button>
+          </div>
+        )}
       </section>
       {message && <p role="status" className="border-l-4 border-slate-600 bg-white p-4">{message}</p>}
       {audioError && <p role="alert" className="border-l-4 border-red-700 bg-white p-4">Lỗi âm thanh: {audioError}. Kiểm tra loa/quyền trình duyệt và thử bật âm thanh lại.</p>}

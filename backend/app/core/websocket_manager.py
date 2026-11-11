@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from app.database import AsyncSessionLocal
 from app.models import Station, StationStatus, SystemEvent, AlarmEvent, Alarm, AlarmStatus
 from app.core.alarm_lifecycle import expire_alarms
+from app.core.security import extract_client_ip
 
 logger = logging.getLogger("redcode.websocket")
 
@@ -81,7 +82,10 @@ class ConnectionManager:
         # bị rớt rồi nối lại), giá trị trả về là trạng thái mới nhất — không phải
         # trạng thái ta định đặt — nên dashboard không bao giờ nhận một thông điệp
         # ONLINE cũ cho một trạm đã offline.
-        connected = await self._sync_station_db_status(station_code, event="DEVICE_CONNECTED")
+        client_ip = extract_client_ip(websocket)
+        connected = await self._sync_station_db_status(
+            station_code, event="DEVICE_CONNECTED", ip_address=client_ip
+        )
         await self._broadcast_station_status(station_code, connected)
         logger.info(f"Station connected: {station_code}")
 
@@ -201,6 +205,36 @@ class ConnectionManager:
             readiness={"audio_ready": audio_ready, "client_ready": client_ready},
             seen_at=now,
         )
+
+    async def record_http_heartbeat(
+        self,
+        station_code: str,
+        audio_ready: bool = False,
+        client_ready: bool = True,
+        ip_address: Optional[str] = None,
+        seen_at: Optional[datetime] = None,
+    ) -> bool:
+        """Ghi nhận nhịp tim HTTP dự phòng trong cùng khóa tuần tự ``_presence_lock``.
+
+        Tránh việc endpoint HTTP tự mở giao dịch ghi ``ONLINE``/``OFFLINE`` bên ngoài
+        khóa hiện diện và ghi đè kết quả ``disconnect_station`` vừa chạy.
+        """
+        now = seen_at or datetime.now(timezone.utc)
+        async with self._presence_lock(station_code):
+            async with self._lock:
+                connected = station_code in self.active_stations
+                if connected:
+                    self.last_heartbeats[station_code] = now
+            readiness = {"audio_ready": audio_ready, "client_ready": client_ready}
+            if ip_address is not None:
+                await self._update_station_db_status(
+                    station_code, connected, None, readiness, now, ip_address=ip_address
+                )
+            else:
+                await self._update_station_db_status(
+                    station_code, connected, None, readiness, now
+                )
+            return connected
 
     async def broadcast_alarm(self, alarm_data: dict, target_station_codes: Optional[List[str]] = None):
         """
@@ -344,6 +378,7 @@ class ConnectionManager:
         event: Optional[str] = None,
         readiness: Optional[Dict[str, bool]] = None,
         seen_at: Optional[datetime] = None,
+        ip_address: Optional[str] = None,
     ) -> bool:
         """Ghi trạng thái hiện diện của trạm theo SỰ THẬT hiện tại trong bộ nhớ.
 
@@ -371,7 +406,12 @@ class ConnectionManager:
         async with self._presence_lock(station_code):
             async with self._lock:
                 connected = station_code in self.active_stations
-            await self._update_station_db_status(station_code, connected, event, readiness, seen_at)
+            if ip_address is not None:
+                await self._update_station_db_status(
+                    station_code, connected, event, readiness, seen_at, ip_address=ip_address
+                )
+            else:
+                await self._update_station_db_status(station_code, connected, event, readiness, seen_at)
             return connected
 
     async def _update_station_db_status(
@@ -381,6 +421,7 @@ class ConnectionManager:
         event: Optional[str] = None,
         readiness: Optional[Dict[str, bool]] = None,
         seen_at: Optional[datetime] = None,
+        ip_address: Optional[str] = None,
     ):
         now = datetime.now(timezone.utc)
         status = StationStatus.ONLINE.value if connected else StationStatus.OFFLINE.value
@@ -396,6 +437,8 @@ class ConnectionManager:
                     "last_seen_at": seen_at or now,
                     "updated_at": now,
                 }
+                if ip_address:
+                    values["ip_address"] = ip_address
                 if not connected:
                     # Trạm đã mất kết nối thì không còn chứng cứ nào cho việc phát được
                     # âm thanh. Giữ cờ cũ sẽ khiến dashboard hiện "AUDIO READY" cho một

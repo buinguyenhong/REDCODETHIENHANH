@@ -6,6 +6,82 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-11-11 — Xử lý 14 phát hiện rà soát đợt 4 (Backend, Frontend, đồng bộ múi giờ & kiểm thử hồi quy)
+
+### Yêu cầu
+
+Rà soát toàn bộ mã nguồn dự án và xử lý dứt điểm 14 phát hiện từ mức **P1 (Cao)** đến **P2 (Trung bình)** và **P3 (Thấp)** trên cả Backend lẫn Frontend, bổ sung test hồi quy cho từng nhóm hành vi đã sửa.
+
+### Các hạng mục đã xử lý
+
+1. **[P1] Chuyển giao hàng đợi báo động khi trạm offline và đồng bộ sự kiện (`DISPLAYED` / `AUDIO_*`) khi kết nối lại**:
+   - Sửa thứ tự gửi sự kiện trong [`WebSocketContext.jsx`](frontend/src/context/WebSocketContext.jsx): luôn gửi `RECEIVED` trước khi cập nhật `setActiveAlarms` (nhánh `synchronize()` và `ALARM_EVENT`), tránh race condition khiến hiệu ứng theo dõi đầu hàng đợi gửi `DISPLAYED` trước `RECEIVED` và bị máy chủ từ chối chuyển trạng thái.
+   - Bổ sung bộ theo dõi trạng thái đầu hàng đợi (`createHeadAlarmTracker`, `recordHeadAudioStarted`, `recordHeadAudioCompleted`, `recordHeadAudioFailed`, `flushHeadAlarmEvents`) trong [`alarmQueue.js`](frontend/src/utils/alarmQueue.js) để khi trạm chuyển sang báo động kế tiếp lúc mất mạng, các mốc `DISPLAYED` và `AUDIO_*` được đẩy bù đúng thứ tự đơn điệu (`RECEIVED -> DISPLAYED -> AUDIO_*`) ngay sau khi kết nối lại.
+   - Ở chiều HTTP `POST /api/stations/{station_code}/alarms/{alarm_id}/dismiss` ([`stations.py`](backend/app/api/stations.py)), tự động điền bù `received_at` và `displayed_at` nếu trạm bấm "Đã nắm thông tin" cho báo động thứ hai khi thông điệp WebSocket `DISPLAYED` chưa kịp tới máy chủ.
+2. **[P1] Xoá mềm (soft-delete) nhất quán trên giao diện Admin, đếm sức khoẻ hệ thống và kiểm tra khoá ngoại**:
+   - Bổ sung tham số lọc `enabled_only: bool = False` cho `GET /api/stations`, `GET /api/users`, `GET /api/audio` và cập nhật [`AdminDashboard.jsx`](frontend/src/pages/AdminDashboard.jsx) + [`client.js`](frontend/src/api/client.js) gọi `enabledOnly = true` (kèm lọc `enabled !== false`), giúp bản ghi vừa xoá biến mất ngay khỏi bảng cấu hình và bảng giám sát.
+   - Lọc `Station.enabled == True` trong [`health.py`](backend/app/api/health.py) (`total_stations`), [`system.py`](backend/app/api/system.py) (`total_configured_stations`, `online_stations`, `offline_stations`) và [`schemas/__init__.py`](backend/app/schemas/__init__.py) (`ReceiverGroupOut.for_group`).
+   - Bảo toàn trạng thái `enabled` hiện có khi chỉnh sửa loại báo động, người dùng, nhóm nhận trong [`AdminDashboard.jsx`](frontend/src/pages/AdminDashboard.jsx) và khôi phục `station.enabled = reg.enabled` khi đăng ký lại mã trạm đã từng xoá mềm trong [`stations.py`](backend/app/api/stations.py).
+   - Kiểm tra tồn tại và trạng thái `enabled` của `department_id`, `receiver_group_id`, `receiver_group_ids`, `station_ids` (kèm khử trùng lặp danh sách ID) trong [`stations.py`](backend/app/api/stations.py), [`users.py`](backend/app/api/users.py), [`alarm_types.py`](backend/app/api/alarm_types.py), [`receiver_groups.py`](backend/app/api/receiver_groups.py) — trả HTTP `400` rõ ràng thay vì lỗi `500 IntegrityError`.
+3. **[P1] Thu hồi phiên WebSocket an toàn khi xoay/thu hồi token hoặc cập nhật/xoá trạm**:
+   - Bổ sung helper `_disconnect_and_close_station_socket` trong [`stations.py`](backend/app/api/stations.py) dùng chung cho `confirm_device`, `register_station`, `update_station`, `delete_station`: gỡ trạm khỏi `manager` trước và bọc `ws.close()` trong `asyncio.wait_for(..., timeout=2)` + `try/except` để socket treo không làm hỏng giao dịch HTTP sau khi đã `commit()`.
+4. **[P2] Sửa truy vấn đồng bộ báo động tồn đọng (`pending-sync`) mỗi nhịp tim trong [`main.py`](backend/app/main.py)**:
+   - Thay `join(Station)` thiếu điều kiện bằng `join(Station, Station.id == AlarmStationState.station_id)`, chỉ kích hoạt `request_station_sync` khi `AlarmStationState.state == StationAlarmStateEnum.PENDING.value` và báo động chưa quá hạn (`(Alarm.expires_at == None) | (Alarm.expires_at > now_utc)`).
+   - Chỉ xoá `_last_pending_sync_check[station_code]` trong khối `finally` của `websocket_endpoint` khi không còn phiên mới kế nhiệm (`manager.active_stations.get(station_code) is None`).
+5. **[P2] Tuần tự hoá nhịp tim HTTP và lưu địa chỉ IP thực của trạm**:
+   - Thêm `extract_client_ip` trong [`security.py`](backend/app/core/security.py) (ưu tiên `X-Forwarded-For` / `X-Real-IP`) và bật `--proxy-headers --forwarded-allow-ips *` trong [`start_server.py`](backend/start_server.py).
+   - Cập nhật `ip_address` của trạm trong `confirm_device`, `connect_station`, và `POST /api/stations/heartbeat` (đi qua `manager.record_http_heartbeat` giữ `_presence_lock(station_code)` trong [`websocket_manager.py`](backend/app/core/websocket_manager.py)).
+6. **[P2] Tách biệt phiên WebSocket của trạm thu và phiên đăng nhập người dùng, thêm nút gỡ cấu hình trạm**:
+   - Trong [`WebSocketContext.jsx`](frontend/src/context/WebSocketContext.jsx), khi trình duyệt đã có định danh trạm hợp lệ (`station_code` + `device_token`), không truyền `token` JWT của người dùng vào hiệu ứng kết nối WebSocket để việc đăng nhập/đăng xuất của Bác sĩ/Admin trên cùng máy không làm ngắt kết nối còi báo động của trạm.
+   - Thêm nút `"Gỡ cấu hình trạm khỏi máy này"` (dành cho Admin) trong [`ReceiverStationView.jsx`](frontend/src/pages/ReceiverStationView.jsx).
+7. **[P2] Dừng ngay clip âm thanh thăm dò (`verifyPlayback`) khi có báo động thật**:
+   - Lưu tham chiếu `this.probeAudio` trong [`soundPlayer.js`](frontend/src/utils/soundPlayer.js) và dọn dẹp ngay trong `stop()` khi báo động thật kích hoạt `playAlarm()`, tránh phát chồng âm thanh hoặc ghi đè trạng thái sẵn sàng cũ.
+8. **[P2/P3] Đồng bộ múi giờ bệnh viện (`Asia/Ho_Chi_Minh`, UTC+7), Audit Log, ẩn nút Demo trên Production & cấu hình Alembic**:
+   - Chuẩn hoá hậu tố UTC (`+00:00`) cho các trường thời gian trả về từ [`schemas/__init__.py`](backend/app/schemas/__init__.py) và [`system.py`](backend/app/api/system.py); chuyển `st.dismissed_at` sang múi giờ `Asia/Ho_Chi_Minh` khi xuất cột K file Excel trong [`reports.py`](backend/app/api/reports.py).
+   - Tạo helper [`hospitalTime.js`](frontend/src/utils/hospitalTime.js) (`formatHospitalDate`) cho bộ lọc ngày mặc định trong [`ReportsView.jsx`](frontend/src/pages/ReportsView.jsx) (tránh lệch lùi 1 ngày trong ca trực đêm 00:00–06:59 sáng giờ Việt Nam) và gắn `timeZone: 'Asia/Ho_Chi_Minh'` tại [`AlarmOverlay.jsx`](frontend/src/components/AlarmOverlay.jsx), [`OperatorDashboard.jsx`](frontend/src/pages/OperatorDashboard.jsx), [`AdminDashboard.jsx`](frontend/src/pages/AdminDashboard.jsx).
+   - Ghi nhận `CONFIGURATION_CHANGED` cho cả `PUT /api/stations/{id}` và `DELETE /api/stations/{id}` trong [`main.py`](backend/app/main.py); trả đầy đủ `allowed_department_ids` ở phản hồi tạo/sửa loại báo động trong [`alarm_types.py`](backend/app/api/alarm_types.py).
+   - Chỉ hiển thị các nút tài khoản mẫu tại [`Login.jsx`](frontend/src/pages/Login.jsx) khi `import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true'`; xoá gọi trùng `notify()` khi tạo trạm trong [`AdminDashboard.jsx`](frontend/src/pages/AdminDashboard.jsx); thêm `path_separator = os` vào [`alembic.ini`](alembic.ini) và [`backend/alembic.ini`](backend/alembic.ini).
+
+### File chính đã sửa / thêm mới
+
+- Backend:
+  - `alembic.ini`, `backend/alembic.ini`, `backend/start_server.py`
+  - `backend/app/main.py`, `backend/app/core/security.py`, `backend/app/core/websocket_manager.py`, `backend/app/schemas/__init__.py`
+  - `backend/app/api/stations.py`, `backend/app/api/health.py`, `backend/app/api/system.py`, `backend/app/api/audio.py`, `backend/app/api/users.py`, `backend/app/api/alarm_types.py`, `backend/app/api/receiver_groups.py`, `backend/app/api/reports.py`
+  - `backend/tests/test_review_round4_regressions.py` (**mới**, 6 test hồi quy bất đồng bộ)
+- Frontend:
+  - `frontend/src/api/client.js`, `frontend/src/context/WebSocketContext.jsx`
+  - `frontend/src/utils/alarmQueue.js`, `frontend/src/utils/soundPlayer.js`, `frontend/src/utils/hospitalTime.js` (**mới**)
+  - `frontend/src/components/AlarmOverlay.jsx`, `frontend/src/pages/AdminDashboard.jsx`, `frontend/src/pages/OperatorDashboard.jsx`, `frontend/src/pages/ReceiverStationView.jsx`, `frontend/src/pages/ReportsView.jsx`, `frontend/src/pages/Login.jsx`
+  - `frontend/tests/alarmQueue.test.js`, `frontend/tests/soundPlayer.test.js`, `frontend/tests/hospitalTime.test.js` (**mới**)
+
+### Migration
+
+- Không thay đổi schema cơ sở dữ liệu hay thêm revision Alembic mới (head hiện hành vẫn là `0003_notification_outbox_Processing`).
+- Bổ sung `path_separator = os` vào `alembic.ini` và `backend/alembic.ini` để loại bỏ cảnh báo deprecation của Alembic khi chạy `alembic upgrade head` hoặc `test_alembic_migrations.py`.
+
+### Bằng chứng thực chạy
+
+```powershell
+# 1. Backend — chạy toàn bộ suite kiểm thử trên cơ sở dữ liệu sạch
+Set-Location backend
+Remove-Item -Force -ErrorAction SilentlyContinue redcode.db
+..\venv\Scripts\pytest.exe -q
+# → 100 passed in 76.12s (0:01:16) (0 warnings)
+
+# 2. Frontend — chạy toàn bộ unit test và build production
+Set-Location frontend
+npm test
+# → tests 47 / pass 47 / fail 0
+npm run build
+# → ✓ 1504 modules transformed, built in 7.26s
+```
+
+### Giới hạn & việc còn lại
+
+- Các bài kiểm thử mới ở Frontend (`alarmQueue.test.js`, `soundPlayer.test.js`, `hospitalTime.test.js`) kiểm chứng logic đơn vị trên Node test runner; chưa bao gồm kiểm thử trình duyệt đầu-cuối (Playwright/Cypress).
+- Chưa dựng lại cụm Docker (`docker compose`) trong phiên cục bộ này; các luồng Docker/PostgreSQL sẽ được kiểm chứng tự động qua GitHub Actions CI khi push.
+
 ## 2026-10-14 — Sửa hồi quy do chính đợt F-01 gây ra và thêm test chặn lớp lỗi đó
 
 Tiếp ngay đợt "Xử lý 12 phát hiện tồn đọng F-01…F-12" ở dưới. Đợt này **không thêm phát hiện mới**: nó sửa một lỗi **do đợt dưới tự gây ra**, tìm thấy khi tự kiểm tra lại sau khi đã commit và push, rồi thêm một lớp kiểm thử để lỗi cùng loại không lọt lại.

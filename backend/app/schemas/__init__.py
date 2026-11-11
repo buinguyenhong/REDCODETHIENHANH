@@ -2,6 +2,10 @@ from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+def _utc_timestamp(value):
+    return value.replace(tzinfo=timezone.utc) if isinstance(value, datetime) and value.tzinfo is None else value
+
+
 # --- Auth ---
 class LoginRequest(BaseModel):
     username: str
@@ -56,6 +60,11 @@ class UserOut(UserBase):
     department: Optional[DepartmentOut] = None
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator('last_login_at', 'created_at', mode='before')
+    @classmethod
+    def utc_timestamps(cls, value):
+        return _utc_timestamp(value)
+
 # --- Stations ---
 class StationRegister(BaseModel):
     station_code: str
@@ -98,6 +107,11 @@ class StationOut(BaseModel):
     raw_device_token: Optional[str] = None # Populated once on registration / rotation
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator('last_seen_at', 'created_at', mode='before')
+    @classmethod
+    def utc_timestamps(cls, value):
+        return _utc_timestamp(value)
+
 # --- Receiver Groups ---
 class ReceiverGroupBase(BaseModel):
     code: str
@@ -138,7 +152,7 @@ class ReceiverGroupOut(ReceiverGroupBase):
         sẽ ném lỗi rõ ràng thay vì trả về dữ liệu sai.
         """
         out = cls.model_validate(group)
-        out.station_ids = sorted(station.id for station in group.stations)
+        out.station_ids = sorted(station.id for station in group.stations if station.enabled)
         return out
 
 # --- Alarm Types ---
@@ -231,6 +245,14 @@ class AlarmStationStateOut(BaseModel):
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator(
+        'received_at', 'displayed_at', 'audio_started_at', 'audio_completed_at',
+        'dismissed_at', 'failed_at', 'created_at', 'updated_at', mode='before'
+    )
+    @classmethod
+    def utc_timestamps(cls, value):
+        return _utc_timestamp(value)
+
 # --- Alarms ---
 class AlarmCreate(BaseModel):
     alarm_type_id: int
@@ -247,6 +269,11 @@ class AlarmEventOut(BaseModel):
     event_time: datetime
     event_metadata: Optional[Dict[str, Any]] = None
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator('event_time', mode='before')
+    @classmethod
+    def utc_timestamps(cls, value):
+        return _utc_timestamp(value)
 
 class AlarmOut(BaseModel):
     id: int

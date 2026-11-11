@@ -35,3 +35,24 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except Exception:
         return None
+
+
+def extract_client_ip(request_or_ws: Any) -> Optional[str]:
+    """Lấy địa chỉ IP thực của máy trạm phía sau Nginx reverse proxy.
+
+    Ưu tiên header ``X-Forwarded-For`` (lấy địa chỉ đầu tiên) rồi ``X-Real-IP``
+    do Nginx truyền vào, trước khi rơi về ``client.host`` trực tiếp.
+    """
+    headers = getattr(request_or_ws, "headers", None)
+    if headers:
+        forwarded_for = headers.get("x-forwarded-for")
+        if forwarded_for:
+            first_ip = forwarded_for.split(",")[0].strip()
+            if first_ip:
+                return first_ip
+        real_ip = headers.get("x-real-ip")
+        if real_ip and real_ip.strip():
+            return real_ip.strip()
+    client = getattr(request_or_ws, "client", None)
+    host = getattr(client, "host", None)
+    return host if isinstance(host, str) and host.strip() else None

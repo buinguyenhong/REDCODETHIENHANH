@@ -78,7 +78,7 @@ export default function AlarmOverlay() {
               <div>
                 <span className="text-xs uppercase font-mono text-slate-300 block">THỜI GIAN PHÁT:</span>
                 <span className="text-lg md:text-xl font-mono font-bold text-white">
-                  {new Date(currentAlarm.created_at).toLocaleTimeString('vi-VN')}
+                  {new Date(currentAlarm.created_at).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}
                 </span>
               </div>
             </div>

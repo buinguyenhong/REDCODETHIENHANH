@@ -15,7 +15,7 @@ async def get_system_status(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_active_admin)
 ):
-    stmt = select(Station)
+    stmt = select(Station).where(Station.enabled == True)
     stations = (await db.execute(stmt)).scalars().all()
 
     online_count = sum(1 for s in stations if s.status == "ONLINE")
@@ -167,4 +167,7 @@ async def list_system_events(
         stmt = stmt.where(SystemEvent.severity == severity.upper())
 
     events = (await db.execute(stmt)).scalars().all()
+    for ev in events:
+        if ev.created_at and ev.created_at.tzinfo is None:
+            ev.created_at = ev.created_at.replace(tzinfo=timezone.utc)
     return events

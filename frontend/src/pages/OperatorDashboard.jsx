@@ -302,7 +302,7 @@ export default function OperatorDashboard() {
                         </span>
                         <span className="text-xs font-mono text-slate-500 flex items-center space-x-1">
                           <Clock className="w-3.5 h-3.5" />
-                          <span>{new Date(alarm.created_at).toLocaleTimeString('vi-VN')}</span>
+                          <span>{new Date(alarm.created_at).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}</span>
                         </span>
                       </div>
 

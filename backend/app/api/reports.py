@@ -155,6 +155,12 @@ async def export_alarms_xlsx(
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).isoformat()
+    def formatted_time(value):
+        if not value:
+            return ''
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%H:%M:%S')
 
     # Styling definitions
     header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
@@ -197,7 +203,7 @@ async def export_alarms_xlsx(
                 details.append([safe(v) for v in [a.id, st_code, st.state, formatted(st.received_at), formatted(st.displayed_at), formatted(st.audio_started_at), formatted(st.audio_completed_at), formatted(st.dismissed_at), formatted(st.failed_at), st.error_message]])
                 st_text = f"{st_code}: {st.state}"
                 if st.dismissed_at:
-                    st_text += f" (Dismiss: {st.dismissed_at.strftime('%H:%M:%S')})"
+                    st_text += f" (Dismiss: {formatted_time(st.dismissed_at)})"
                 station_summaries.append(st_text)
         stations_str = "; ".join(station_summaries) if station_summaries else "Chưa có trạm phản hồi"
 
@@ -242,7 +248,7 @@ async def export_alarms_xlsx(
     wb.save(buffer)
     buffer.seek(0)
 
-    filename = f"BaoCao_Redcode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"BaoCao_Redcode_{datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

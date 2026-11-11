@@ -15,11 +15,14 @@ router = APIRouter(prefix="/users", tags=["Users"])
 @router.get("", response_model=List[UserOut])
 async def list_users(
     department_id: Optional[int] = None,
+    enabled_only: bool = False,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_active_admin)
 ):
     stmt = select(User).options(selectinload(User.department))
     stmt = stmt.where(User.role.in_(['ADMIN', 'OPERATOR']))
+    if enabled_only:
+        stmt = stmt.where(User.enabled == True)
     if department_id:
         stmt = stmt.where(User.department_id == department_id)
     stmt = stmt.order_by(User.id.asc())
@@ -38,7 +41,7 @@ async def create_user(
 
     if user_in.department_id:
         dept = await db.get(Department, user_in.department_id)
-        if not dept:
+        if not dept or not dept.enabled:
             raise HTTPException(status_code=400, detail="Khoa phòng không hợp lệ")
 
     user = User(
@@ -71,6 +74,9 @@ async def update_user(
     if user_in.display_name is not None:
         user.display_name = user_in.display_name
     if user_in.department_id is not None:
+        dept = await db.get(Department, user_in.department_id)
+        if not dept or not dept.enabled:
+            raise HTTPException(status_code=400, detail="Khoa phòng không hợp lệ")
         user.department_id = user_in.department_id
     if user_in.role is not None:
         user.role = user_in.role

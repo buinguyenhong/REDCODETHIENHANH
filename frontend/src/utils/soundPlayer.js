@@ -7,6 +7,7 @@ class SoundPlayer {
   constructor() {
     this.audioContext = null;
     this.currentAudio = null;
+    this.probeAudio = null;
     this.isPlaying = false;
     this.isAudioReady = false;
     this.repeatTimer = null;
@@ -91,8 +92,10 @@ class SoundPlayer {
    */
   async verifyPlayback() {
     if (this.isPlaying) throw new Error('Đang phát cảnh báo; không thực hiện test');
+    const generation = this.generation;
+    const probe = new Audio(this.buildProbeWavDataUri());
+    this.probeAudio = probe;
     try {
-      const probe = new Audio(this.buildProbeWavDataUri());
       await probe.play();
       // Đợi tiếng thử phát XONG rồi mới dừng. Trước đây pause() được gọi ngay sau
       // khi play() trả về, mà play() chỉ resolve lúc audio BẮT ĐẦU phát — nên phép
@@ -119,11 +122,20 @@ class SoundPlayer {
         probe.onerror = done;
       });
       probe.pause();
+      if (generation !== this.generation || this.isPlaying) {
+        return this.isAudioReady;
+      }
       this.isAudioReady = true;
       return true;
     } catch (e) {
-      this.isAudioReady = false;
+      if (generation === this.generation && !this.isPlaying) {
+        this.isAudioReady = false;
+      }
       throw e;
+    } finally {
+      if (this.probeAudio === probe) {
+        this.probeAudio = null;
+      }
     }
   }
 
@@ -232,6 +244,14 @@ class SoundPlayer {
         this.currentAudio.currentTime = 0;
       } catch (_) {}
       this.currentAudio = null;
+    }
+    if (this.probeAudio) {
+      try {
+        const probe = this.probeAudio;
+        this.probeAudio = null;
+        if (typeof probe.onended === 'function') probe.onended();
+        probe.pause();
+      } catch (_) {}
     }
   }
 }

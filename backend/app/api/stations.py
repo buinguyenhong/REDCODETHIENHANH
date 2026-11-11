@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -7,30 +8,74 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import (
-    Station, ReceiverGroup, ReceiverGroupStation, 
+    Station, Department, ReceiverGroup, ReceiverGroupStation, 
     Alarm, AlarmType, AlarmEvent, AlarmStatus, StationStatus, SystemEvent, User,
     AlarmStationState, StationAlarmStateEnum
 )
 from app.schemas import StationRegister, StationHeartbeat, StationDismiss, StationOut
-from app.core.security import hash_device_token
+from app.core.security import hash_device_token, extract_client_ip
 from app.core.websocket_manager import manager
 from app.api.deps import get_current_user, get_current_active_admin
 from app.core.alarm_lifecycle import expire_alarms
 
 router = APIRouter(prefix="/stations", tags=["Stations"])
 
+
+async def _disconnect_and_close_station_socket(station_code: str, code: int, reason: str) -> None:
+    """Gỡ phiên trạm khỏi sổ kết nối trước rồi đóng socket có bảo vệ timeout."""
+    ws = manager.active_stations.get(station_code)
+    if not ws:
+        return
+    await manager.disconnect_station(station_code, ws)
+    try:
+        await asyncio.wait_for(ws.close(code=code, reason=reason), timeout=2)
+    except Exception:
+        pass
+
+
+async def _validate_station_references(
+    db: AsyncSession,
+    department_id: Optional[int],
+    receiver_group_ids: Optional[List[int]],
+) -> Optional[List[int]]:
+    if department_id is not None:
+        dept = await db.get(Department, department_id)
+        if not dept or not dept.enabled:
+            raise HTTPException(status_code=400, detail="Khoa phòng không hợp lệ")
+    if receiver_group_ids is None:
+        return None
+    unique_group_ids = list(dict.fromkeys(receiver_group_ids))
+    if unique_group_ids:
+        valid_groups = set((await db.execute(
+            select(ReceiverGroup.id).where(
+                ReceiverGroup.id.in_(unique_group_ids),
+                ReceiverGroup.enabled == True,
+            )
+        )).scalars().all())
+        if not set(unique_group_ids) <= valid_groups:
+            raise HTTPException(status_code=400, detail="Nhóm nhận không hợp lệ")
+    return unique_group_ids
+
+
 @router.post('/{station_id}/confirm-device', response_model=StationOut)
-async def confirm_device(station_id: int, db: AsyncSession = Depends(get_db), admin: User = Depends(get_current_active_admin)):
+async def confirm_device(
+    station_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_active_admin),
+):
     station = (await db.execute(select(Station).options(selectinload(Station.department), selectinload(Station.receiver_groups)).where(Station.id == station_id))).scalar_one_or_none()
     if not station or not station.enabled:
         raise HTTPException(status_code=404, detail='Trạm không tồn tại hoặc bị vô hiệu hóa')
     raw_token = secrets.token_urlsafe(32)
     station.device_token_hash = hash_device_token(raw_token)
-    db.add(SystemEvent(station_id=station.id, event_type='DEVICE_CONFIRMED', severity='INFO', message='Admin confirmed receiver device', event_metadata={'actor': admin.username}, created_at=datetime.now(timezone.utc)))
+    client_ip = extract_client_ip(request)
+    if client_ip:
+        station.ip_address = client_ip
+    station.updated_at = datetime.now(timezone.utc)
+    db.add(SystemEvent(station_id=station.id, event_type='DEVICE_CONFIRMED', severity='INFO', message='Admin confirmed receiver device', event_metadata={'actor': admin.username, 'ip_address': client_ip}, created_at=datetime.now(timezone.utc)))
     await db.commit()
-    ws = manager.active_stations.get(station.station_code)
-    if ws:
-        await ws.close(code=1008, reason='Device identity replaced')
+    await _disconnect_and_close_station_socket(station.station_code, 1008, 'Device identity replaced')
     result = StationOut.model_validate(station)
     result.raw_device_token = raw_token
     return result
@@ -46,6 +91,7 @@ async def activate_station(credentials: StationHeartbeat, db: AsyncSession = Dep
 async def list_stations(
     status_filter: Optional[str] = None,
     department_id: Optional[int] = None,
+    enabled_only: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -56,6 +102,8 @@ async def list_stations(
         select(Station)
         .options(selectinload(Station.department), selectinload(Station.receiver_groups))
     )
+    if enabled_only:
+        stmt = stmt.where(Station.enabled == True)
     if status_filter:
         stmt = stmt.where(Station.status == status_filter.upper())
     if department_id:
@@ -95,13 +143,15 @@ async def register_station(
     Generates cryptographically secure random token if not provided.
     Returns raw_device_token once upon creation/rotation.
     """
+    group_ids = await _validate_station_references(db, reg.department_id, reg.receiver_group_ids)
+
     raw_token = reg.device_token.strip() if reg.device_token and reg.device_token.strip() else secrets.token_urlsafe(32)
     token_hash = hash_device_token(raw_token)
 
     stmt = select(Station).where(Station.station_code == reg.station_code)
     station = (await db.execute(stmt)).scalar_one_or_none()
 
-    client_ip = request.client.host if request.client else None
+    client_ip = extract_client_ip(request)
 
     credential_rotated = False
     if station:
@@ -111,7 +161,8 @@ async def register_station(
         station.department_id = reg.department_id
         station.location = reg.location
         station.device_token_hash = token_hash
-        station.ip_address = client_ip
+        station.ip_address = station.ip_address or client_ip
+        station.enabled = reg.enabled
         station.updated_at = datetime.now(timezone.utc)
     else:
         # Create new station
@@ -122,7 +173,7 @@ async def register_station(
             location=reg.location,
             ip_address=client_ip,
             device_token_hash=token_hash,
-            enabled=True,
+            enabled=reg.enabled,
             status=StationStatus.OFFLINE.value
         )
         db.add(station)
@@ -135,16 +186,15 @@ async def register_station(
     # (dù token không đổi) làm mọi trạm đang trực rơi vào trạng thái "bị từ chối
     # credential" chỉ vì admin sửa tên thiết bị.
     if credential_rotated:
-        old_socket = manager.active_stations.get(station.station_code)
-        if old_socket:
-            await manager.disconnect_station(station.station_code, old_socket)
-            await old_socket.close(code=1008, reason='Station credential rotated')
+        await _disconnect_and_close_station_socket(
+            station.station_code, 1008, 'Station credential rotated'
+        )
 
-    if reg.receiver_group_ids:
+    if group_ids is not None:
         await db.execute(
             ReceiverGroupStation.__table__.delete().where(ReceiverGroupStation.station_id == station.id)
         )
-        for gid in reg.receiver_group_ids:
+        for gid in group_ids:
             db.add(ReceiverGroupStation(receiver_group_id=gid, station_id=station.id))
         await db.commit()
 
@@ -189,52 +239,19 @@ async def station_heartbeat(
         raise HTTPException(status_code=401, detail="Token trạm không hợp lệ")
 
     now = datetime.now(timezone.utc)
-    client_ip = hb.ip_address or (request.client.host if request.client else station.ip_address)
+    client_ip = hb.ip_address or extract_client_ip(request) or station.ip_address
 
     # Trạm còn sống (có heartbeat) KHÁC với trạm nhận được báo động (phải có WebSocket).
-    # broadcast_alarm chỉ gửi cho manager.active_stations, nên ghi websocket_connected=True
-    # cho một trạm không có socket sẽ khiến dashboard hiện ONLINE trong khi trạm đó không
-    # bao giờ nhận được báo động nào — mất báo động âm thầm.
-    ws_connected = hb.station_code in manager.active_stations
-
-    station.last_seen_at = now
-    station.websocket_connected = ws_connected
-    if ws_connected:
-        # Cờ sẵn sàng chỉ có giá trị khi có kênh nhận báo động. Nhịp tim HTTP tới
-        # từ một trạm KHÔNG có WebSocket không chứng minh được điều gì về khả năng
-        # nhận báo động hay phát âm thanh của nó — thiết bị gửi nhịp tim bằng một
-        # đường mạng khác (WiFi còn, cáp LAN đứt; hoặc một máy trạm khác gửi hộ)
-        # vẫn ghi audio_ready=True trong khi loa không hề kêu. Ghi cờ đó lên bảng
-        # trạm là dựng lại đúng lời nói dối "AUDIO READY" mà endpoint này vừa sửa
-        # ở websocket_connected. Trạm không có socket thì cờ sẵn sàng phải là false.
-        station.audio_ready = hb.audio_ready
-        station.client_ready = hb.client_ready
-    else:
-        station.audio_ready = False
-        station.client_ready = False
-    # ONLINE nghĩa là CÓ KÊNH NHẬN BÁO ĐỘNG, không phải "thiết bị vừa gọi được API".
-    # Nhịp tim HTTP chứng minh thiết bị còn truy cập được mạng, nhưng báo động chỉ
-    # đi qua WebSocket (``broadcast_alarm`` chỉ gửi cho ``manager.active_stations``).
-    # Trước đây dòng này luôn ghi ONLINE, nên một trạm gửi nhịp tim qua WiFi trong
-    # khi cáp LAN đứt vẫn hiện ONLINE xanh trên bảng giám sát — và người trực tin
-    # khoa đó đã nhận được báo động. ``last_seen_at`` ở trên đã ghi nhận thiết bị
-    # còn sống; trạng thái phải phản ánh khả năng nhận báo động.
-    station.status = (
-        StationStatus.ONLINE.value if ws_connected else StationStatus.OFFLINE.value
+    # Toàn bộ việc suy trạng thái ONLINE/OFFLINE và ghi vào database được thực hiện
+    # bên trong ``manager.record_http_heartbeat`` (dưới ``_presence_lock``), tránh
+    # race condition ghi đè trạng thái của ``disconnect_station``.
+    ws_connected = await manager.record_http_heartbeat(
+        station_code=hb.station_code,
+        audio_ready=hb.audio_ready,
+        client_ready=hb.client_ready,
+        ip_address=client_ip,
+        seen_at=now,
     )
-    station.ip_address = client_ip
-    station.updated_at = now
-
-    await db.commit()
-
-    # Inform WebSocket manager. Chỉ gọi khi trạm thật sự có socket: một nhịp tim
-    # HTTP không chứng minh được khả năng nhận báo động hay phát âm thanh.
-    if ws_connected:
-        await manager.update_heartbeat(
-            station_code=hb.station_code,
-            audio_ready=hb.audio_ready,
-            client_ready=hb.client_ready
-        )
 
     return {
         "status": "ok",
@@ -382,7 +399,13 @@ async def dismiss_station_alarm(
             return {'status': 'dismissed_locally', 'alarm_id': alarm.id, 'station_code': station.station_code}
         changed = await db.execute(update(AlarmStationState).where(
             AlarmStationState.id == st_state.id, AlarmStationState.state != 'DISMISSED'
-        ).values(state='DISMISSED', dismissed_at=now, updated_at=now))
+        ).values(
+            state='DISMISSED',
+            received_at=st_state.received_at or now,
+            displayed_at=st_state.displayed_at or now,
+            dismissed_at=now,
+            updated_at=now,
+        ))
         if changed.rowcount != 1:
             return {'status': 'dismissed_locally', 'alarm_id': alarm.id, 'station_code': station.station_code}
     else:
@@ -390,6 +413,8 @@ async def dismiss_station_alarm(
             alarm_id=alarm.id,
             station_id=station.id,
             state=StationAlarmStateEnum.DISMISSED.value,
+            received_at=now,
+            displayed_at=now,
             dismissed_at=now,
             created_at=now,
             updated_at=now
@@ -463,6 +488,8 @@ async def update_station(
     if not station:
         raise HTTPException(status_code=404, detail="Không tìm thấy trạm nhận")
 
+    group_ids = await _validate_station_references(db, reg.department_id, reg.receiver_group_ids)
+
     # Ghi lại mã cũ trước khi ghi đè: socket của trạm nằm trong manager dưới mã CŨ.
     # Tra cứu bằng mã mới sau khi đổi mã sẽ không thấy gì, để lại một socket mồ côi
     # không bao giờ nhận được báo động (báo động phát theo mã mới trong DB).
@@ -479,11 +506,11 @@ async def update_station(
         station.device_token_hash = hash_device_token(raw_token)
     station.updated_at = datetime.now(timezone.utc)
 
-    if reg.receiver_group_ids is not None:
+    if group_ids is not None:
         await db.execute(
             ReceiverGroupStation.__table__.delete().where(ReceiverGroupStation.station_id == station.id)
         )
-        for gid in reg.receiver_group_ids:
+        for gid in group_ids:
             db.add(ReceiverGroupStation(receiver_group_id=gid, station_id=station.id))
 
     await db.commit()
@@ -503,10 +530,7 @@ async def update_station(
     elif previous_code != station.station_code:
         reason = 'Station code changed; re-provision this device'
     if reason:
-        ws = manager.active_stations.get(previous_code)
-        if ws:
-            await manager.disconnect_station(previous_code, ws)
-            await ws.close(code=1008, reason=reason)
+        await _disconnect_and_close_station_socket(previous_code, 1008, reason)
     stmt = (
         select(Station)
         .options(selectinload(Station.department), selectinload(Station.receiver_groups))
@@ -529,13 +553,8 @@ async def delete_station(
     station.enabled = False
     await db.commit()
     # Đóng socket đang giữ trạm, cùng khuôn với update_station: gỡ khỏi manager
-    # TRƯỚC rồi mới đóng, và kèm lý do đọc được. Trước đây chỗ này chỉ gọi
-    # ws.close(code=1008) trần: thiếu lý do nên kiosk rơi vào câu thông báo chung
-    # "chưa được xác nhận hoặc credential đã bị thu hồi", và thiếu disconnect nên
-    # cho tới khi vòng đọc của server kịp nhận ra socket đã đóng, mọi báo động
-    # vẫn thử gửi vào xác đó và tốn trọn 1 giây timeout mỗi lần.
-    ws = manager.active_stations.get(station.station_code)
-    if ws:
-        await manager.disconnect_station(station.station_code, ws)
-        await ws.close(code=1008, reason='Station deleted by administrator')
+    # TRƯỚC rồi mới đóng, và kèm lý do đọc được.
+    await _disconnect_and_close_station_socket(
+        station.station_code, 1008, 'Station deleted by administrator'
+    )
     return {"message": "Đã xóa trạm nhận thành công"}

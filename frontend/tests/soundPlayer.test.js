@@ -169,3 +169,21 @@ test('audio verification cannot interrupt an active alarm', async () => {
   assert.equal(soundPlayer.isPlaying, true);
   soundPlayer.stop();
 });
+
+test('real alarm arriving during verifyPlayback immediately stops the probe clip', async () => {
+  globalThis.Audio = class {
+    constructor(url) { this.url = url; audios.push(this); }
+    play() { return Promise.resolve(); }
+    pause() { this.paused = true; }
+  };
+  const probePromise = soundPlayer.verifyPlayback();
+  await Promise.resolve();
+  assert.equal(audios.length, 1);
+  const probe = audios[0];
+
+  // Báo động thật nổ ra khi clip thử vẫn đang phát.
+  soundPlayer.playAlarmSequence(['/assets/audio/alarm.wav'], 1, 0);
+  assert.equal(probe.paused, true, 'clip thử phải bị dừng ngay khi báo động thật bắt đầu');
+  await probePromise;
+  soundPlayer.stop();
+});

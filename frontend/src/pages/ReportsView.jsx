@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
 import { BarChart3, Calendar, FileSpreadsheet } from 'lucide-react';
+import { formatHospitalDate } from '../utils/hospitalTime';
 
 export default function ReportsView() {
   const [fromDate, setFromDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().split('T')[0];
+    const d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    return formatHospitalDate(d);
   });
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [toDate, setToDate] = useState(() => formatHospitalDate(new Date()));
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);

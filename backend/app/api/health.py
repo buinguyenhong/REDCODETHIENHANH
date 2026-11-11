@@ -61,7 +61,9 @@ async def get_health(db: AsyncSession = Depends(get_db)):
 
     total_stations = 0
     if db_status == "ok":
-        total_stations = (await db.execute(select(func.count(Station.id)))).scalar() or 0
+        total_stations = (
+            await db.execute(select(func.count(Station.id)).where(Station.enabled == True))
+        ).scalar() or 0
     active_stations = len(manager.active_stations)
 
     # Hai câu hỏi khác nhau, trước đây bị gộp làm một trường:

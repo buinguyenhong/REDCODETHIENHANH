@@ -2,7 +2,15 @@ import { createContext, useContext, useEffect, useState, useRef, useCallback } f
 import { soundPlayer } from '../utils/soundPlayer';
 import { api } from '../api/client';
 import { useAuth } from './AuthContext';
-import { mergeAlarmQueue, alarmsToAcknowledge } from '../utils/alarmQueue';
+import {
+  mergeAlarmQueue,
+  alarmsToAcknowledge,
+  createHeadAlarmTracker,
+  recordHeadAudioStarted,
+  recordHeadAudioCompleted,
+  recordHeadAudioFailed,
+  flushHeadAlarmEvents,
+} from '../utils/alarmQueue';
 import { reconnectDelay, SESSION_CONFLICT_RETRY_MS } from '../utils/reconnect';
 import { recoverFromHeartbeatTimeout } from '../utils/socketRecovery';
 import { randomId } from '../utils/uuid';
@@ -56,11 +64,13 @@ export function WebSocketProvider({ children }) {
   // Bản sao hàng đợi để synchronize() tính được đúng tập báo động đã vào hiển thị
   // mà không phải chạy side-effect bên trong hàm cập nhật state.
   const activeAlarmsRef = useRef([]);
+  const headTrackerRef = useRef(null);
   useEffect(() => { activeAlarmsRef.current = activeAlarms; }, [activeAlarms]);
   const ordered = (alarms) => mergeAlarmQueue([], alarms, dismissedRef.current, Date.now() + serverOffsetRef.current);
 
   const saveStationConfig = (config) => {
     soundPlayer.stop();
+    headTrackerRef.current = null;
     dismissedRef.current = new Set();
     localStorage.removeItem('redcode_pending_dismiss');
     setAudioError(null);
@@ -100,18 +110,30 @@ export function WebSocketProvider({ children }) {
     if (alarms[0]?.server_time) serverOffsetRef.current = Date.parse(alarms[0].server_time) - Date.now();
     if (disposedRef.current || wsRef.current !== socket) return;
     const merged = mergeAlarmQueue(activeAlarmsRef.current, alarms, dismissedRef.current, Date.now() + serverOffsetRef.current, startedAt);
-    setActiveAlarms(merged);
 
-    // Chỉ ACK những báo động THẬT SỰ vào hàng đợi hiển thị (xem alarmsToAcknowledge).
+    // Gửi RECEIVED TRƯỚC khi cập nhật state hiển thị (và trước khi xả bù các sự
+    // kiện DISPLAYED / AUDIO_* của báo động đầu hàng đợi) để máy chủ luôn nhận
+    // đúng thứ tự đơn điệu PENDING -> DELIVERED -> DISPLAYED -> AUDIO_*.
     for (const alarmId of alarmsToAcknowledge(alarms, merged)) {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'RECEIVED', alarm_id: alarmId }));
       }
     }
+    setActiveAlarms(merged);
+    if (merged[0] && headTrackerRef.current?.alarmId === merged[0].alarm_id) {
+      flushHeadAlarmEvents(wsRef.current, headTrackerRef.current, stationConfig?.station_code, WebSocket.OPEN);
+    }
   };
 
+  // Khi trình duyệt đã được xác nhận làm trạm nhận (có device_token), kết nối
+  // WebSocket định danh bằng token của trạm chứ không dùng JWT của người dùng.
+  // Tách riêng phụ thuộc để việc Admin/Operator đăng nhập hoặc đăng xuất trên máy
+  // Kiosk không đóng và mở lại kết nối WebSocket của trạm.
+  const hasStationIdentity = Boolean(stationConfig?.station_code && stationConfig?.device_token);
+  const dashboardToken = hasStationIdentity ? null : token;
+
   const connect = useCallback(() => {
-    if (disposedRef.current || (!stationConfig?.device_token && !token)) return;
+    if (disposedRef.current || (!hasStationIdentity && !dashboardToken)) return;
     if (activationBlockedRef.current) return; // chờ xác nhận lại thiết bị / đăng nhập lại
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
@@ -119,11 +141,11 @@ export function WebSocketProvider({ children }) {
     const host = window.location.host;
     let url = `${protocol}//${host}/ws`;
 
-    if (stationConfig && stationConfig.station_code && stationConfig.device_token) {
+    if (hasStationIdentity) {
       url += `?type=station&station_code=${encodeURIComponent(stationConfig.station_code)}&token=${encodeURIComponent(stationConfig.device_token)}`;
     } else {
-      const token = localStorage.getItem('redcode_token');
-      url += `?type=dashboard${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+      const authToken = dashboardToken || localStorage.getItem('redcode_token');
+      url += `?type=dashboard${authToken ? `&token=${encodeURIComponent(authToken)}` : ''}`;
     }
 
     try {
@@ -235,7 +257,7 @@ export function WebSocketProvider({ children }) {
       console.error('[WebSocket] Lỗi khởi tạo socket:', err);
       scheduleReconnect();
     }
-  }, [stationConfig, token]);
+  }, [stationConfig, hasStationIdentity, dashboardToken]);
 
   const scheduleReconnect = (minDelayMs = 0) => {
     if (disposedRef.current) return;
@@ -266,13 +288,8 @@ export function WebSocketProvider({ children }) {
         if (msg.event === 'ALARM_TRIGGERED' && msg.data) {
           const alarm = msg.data;
           alarm.localReceivedAt = Date.now();
-          setActiveAlarms((prev) => {
-            // Avoid duplicate alarm in queue
-            if (prev.some((a) => a.alarm_id === alarm.alarm_id)) return prev;
-            return ordered([...prev, alarm]);
-          });
-
-          // Send RECEIVED audit event back to server
+          // Gửi RECEIVED trước khi đưa báo động vào state hiển thị để đảm bảo
+          // gói RECEIVED luôn đi trước gói DISPLAYED trên đường truyền.
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
             wsRef.current.send(JSON.stringify({
               type: 'STATION_EVENT',
@@ -281,6 +298,11 @@ export function WebSocketProvider({ children }) {
               metadata: { station_code: stationConfig.station_code }
             }));
           }
+          setActiveAlarms((prev) => {
+            // Avoid duplicate alarm in queue
+            if (prev.some((a) => a.alarm_id === alarm.alarm_id)) return prev;
+            return ordered([...prev, alarm]);
+          });
         }
         break;
 
@@ -353,8 +375,10 @@ export function WebSocketProvider({ children }) {
   useEffect(() => {
     if (activeAlarms.length > 0) {
       const currentAlarm = activeAlarms[0];
+      const tracker = createHeadAlarmTracker(currentAlarm.alarm_id, headTrackerRef.current);
+      headTrackerRef.current = tracker;
       setAudioError(null);
-      if (wsRef.current?.readyState === WebSocket.OPEN && stationConfig?.station_code) wsRef.current.send(JSON.stringify({ type: 'STATION_EVENT', event_type: 'DISPLAYED', alarm_id: currentAlarm.alarm_id }));
+      flushHeadAlarmEvents(wsRef.current, tracker, stationConfig?.station_code, WebSocket.OPEN);
       if (currentAlarm.audio_sequence && currentAlarm.audio_sequence.length > 0) {
         soundPlayer.playAlarmSequence(
           currentAlarm.audio_sequence,
@@ -364,38 +388,21 @@ export function WebSocketProvider({ children }) {
             // onStart: Send AUDIO_STARTED audit event
             setAudioReady(true);
             setAudioError(null);
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
-              wsRef.current.send(JSON.stringify({
-                type: 'STATION_EVENT',
-                event_type: 'AUDIO_STARTED',
-                alarm_id: currentAlarm.alarm_id,
-                metadata: { station_code: stationConfig.station_code }
-              }));
-            }
+            recordHeadAudioStarted(headTrackerRef.current, currentAlarm.alarm_id);
+            flushHeadAlarmEvents(wsRef.current, headTrackerRef.current, stationConfig?.station_code, WebSocket.OPEN);
           },
           () => {
             // onComplete: Send AUDIO_COMPLETED audit event
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
-              wsRef.current.send(JSON.stringify({
-                type: 'STATION_EVENT',
-                event_type: 'AUDIO_COMPLETED',
-                alarm_id: currentAlarm.alarm_id,
-                metadata: { station_code: stationConfig.station_code }
-              }));
-            }
+            recordHeadAudioCompleted(headTrackerRef.current, currentAlarm.alarm_id);
+            flushHeadAlarmEvents(wsRef.current, headTrackerRef.current, stationConfig?.station_code, WebSocket.OPEN);
           },
           (err) => {
             // onError: Send AUDIO_FAILED audit event and update UI readiness
+            const errMsg = err?.message || 'Autoplay blocked';
             setAudioReady(false);
             setAudioError(err?.message || 'Không phát được âm thanh');
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
-              wsRef.current.send(JSON.stringify({
-                type: 'STATION_EVENT',
-                event_type: 'AUDIO_FAILED',
-                alarm_id: currentAlarm.alarm_id,
-                metadata: { station_code: stationConfig.station_code, error: err?.message || 'Autoplay blocked' }
-              }));
-            }
+            recordHeadAudioFailed(headTrackerRef.current, currentAlarm.alarm_id, errMsg);
+            flushHeadAlarmEvents(wsRef.current, headTrackerRef.current, stationConfig?.station_code, WebSocket.OPEN);
           }
         );
       } else {
@@ -404,16 +411,11 @@ export function WebSocketProvider({ children }) {
         // động mà không ai nghe thấy gì, và nhật ký không ghi lại điều gì bất thường.
         setAudioReady(false);
         setAudioError('Báo động này không có tệp âm thanh để phát — trạm không thể hú');
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && stationConfig?.station_code) {
-          wsRef.current.send(JSON.stringify({
-            type: 'STATION_EVENT',
-            event_type: 'AUDIO_FAILED',
-            alarm_id: currentAlarm.alarm_id,
-            metadata: { station_code: stationConfig.station_code, error: 'Báo động không có tệp âm thanh' }
-          }));
-        }
+        recordHeadAudioFailed(headTrackerRef.current, currentAlarm.alarm_id, 'Báo động không có tệp âm thanh');
+        flushHeadAlarmEvents(wsRef.current, headTrackerRef.current, stationConfig?.station_code, WebSocket.OPEN);
       }
     } else {
+      headTrackerRef.current = null;
       soundPlayer.stop();
     }
     return () => soundPlayer.stop();

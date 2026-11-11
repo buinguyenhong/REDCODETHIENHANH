@@ -40,6 +40,22 @@ async def _group_with_stations(db: AsyncSession, group_id: int) -> ReceiverGroup
     )
     return (await db.execute(stmt)).scalar_one()
 
+async def _validate_station_ids(db: AsyncSession, station_ids: Optional[List[int]]) -> Optional[List[int]]:
+    if station_ids is None:
+        return None
+    unique_ids = list(dict.fromkeys(station_ids))
+    if unique_ids:
+        valid_ids = set((await db.execute(
+            select(Station.id).where(
+                Station.id.in_(unique_ids),
+                Station.enabled == True,
+            )
+        )).scalars().all())
+        if not set(unique_ids) <= valid_ids:
+            raise HTTPException(status_code=400, detail="Trạm nhận không hợp lệ")
+    return unique_ids
+
+
 @router.post("", response_model=ReceiverGroupOut, status_code=status.HTTP_201_CREATED)
 async def create_receiver_group(
     group_in: ReceiverGroupCreate,
@@ -49,6 +65,8 @@ async def create_receiver_group(
     stmt = select(ReceiverGroup).where(ReceiverGroup.code == group_in.code)
     if (await db.execute(stmt)).scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Mã nhóm nhận đã tồn tại")
+
+    station_ids = await _validate_station_ids(db, group_in.station_ids)
 
     group = ReceiverGroup(
         code=group_in.code,
@@ -60,8 +78,8 @@ async def create_receiver_group(
     await db.commit()
     await db.refresh(group)
 
-    if group_in.station_ids:
-        for s_id in group_in.station_ids:
+    if station_ids:
+        for s_id in station_ids:
             db.add(ReceiverGroupStation(receiver_group_id=group.id, station_id=s_id))
         await db.commit()
 
@@ -78,6 +96,8 @@ async def update_receiver_group(
     if not group:
         raise HTTPException(status_code=404, detail="Không tìm thấy nhóm nhận")
 
+    station_ids = await _validate_station_ids(db, group_in.station_ids)
+
     if group_in.name is not None:
         group.name = group_in.name
     if group_in.description is not None:
@@ -85,10 +105,10 @@ async def update_receiver_group(
     if group_in.enabled is not None:
         group.enabled = group_in.enabled
 
-    if group_in.station_ids is not None:
+    if station_ids is not None:
         # Replace stations in group
         await db.execute(delete(ReceiverGroupStation).where(ReceiverGroupStation.receiver_group_id == group_id))
-        for s_id in group_in.station_ids:
+        for s_id in station_ids:
             db.add(ReceiverGroupStation(receiver_group_id=group_id, station_id=s_id))
 
     group.updated_at = datetime.now(timezone.utc)

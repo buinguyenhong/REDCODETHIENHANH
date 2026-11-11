@@ -16,8 +16,14 @@ from app.api.deps import get_current_active_admin
 router = APIRouter(prefix="/audio", tags=["Audio"])
 
 @router.get("", response_model=List[AudioFileOut])
-async def list_audio_files(db: AsyncSession = Depends(get_db)):
-    stmt = select(AudioFile).order_by(AudioFile.id.asc())
+async def list_audio_files(
+    enabled_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(AudioFile)
+    if enabled_only:
+        stmt = stmt.where(AudioFile.enabled == True)
+    stmt = stmt.order_by(AudioFile.id.asc())
     res = await db.execute(stmt)
     return [AudioFileOut.model_validate(a) for a in res.scalars().all()]
 
