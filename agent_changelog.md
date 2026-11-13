@@ -6,7 +6,54 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
-## 2026-11-13 — Xử lý 4 vấn đề rà soát đợt 5 (P1: 01–02, P2: 03–04)
+## 2026-11-13 — Kiểm chứng toàn diện trên Docker PostgreSQL 16 & chạy build kiểm thử trực tiếp (tiếp nối commit `8dba80b`)
+
+### Yêu cầu
+
+- Khởi tạo container PostgreSQL 16 cục bộ bằng Docker, chạy migration Alembic và toàn bộ suite kiểm thử backend trên PostgreSQL thật.
+- Build bản production frontend (`vite build`) và khởi chạy backend + frontend kết nối PostgreSQL 16 để kiểm thử trực tiếp trên máy và qua mạng LAN.
+
+### Bằng chứng thực chạy trên PostgreSQL 16
+
+- Hạ tầng kiểm thử: container Docker `redcode_pg_test` (`postgres:16-alpine`, cổng host `5433:5432`) với các database cô lập `redcode_smoke`, `redcode_ci`, `redcode_live`, `redcode_dev`.
+
+```powershell
+# 1. Alembic migration + migration smoke trên PostgreSQL 16 (ENVIRONMENT=production)
+Set-Location backend
+$env:PYTHONPATH="."; $env:DEMO_MODE="true"
+$env:DATABASE_URL="postgresql+asyncpg://redcode_ci:ci-only-not-production@localhost:5433/redcode_smoke"
+..\venv\Scripts\alembic.exe upgrade head
+..\venv\Scripts\python.exe tests/migration_smoke.py
+# → Upgrade head qua 5 revision tới 20261007_integrations; login 200 OK, POST /api/alarms 201 Created, export-xlsx 200 OK
+
+# 2. Hồi quy đợt 5 trên PostgreSQL 16
+$env:ENVIRONMENT="test"; $env:DEMO_MODE="true"
+$env:DATABASE_URL="postgresql+asyncpg://redcode_ci:ci-only-not-production@localhost:5433/redcode_ci"
+$env:LIVE_TEST_DATABASE_URL="postgresql+asyncpg://redcode_ci:ci-only-not-production@localhost:5433/redcode_live"
+..\venv\Scripts\alembic.exe upgrade head
+..\venv\Scripts\pytest.exe tests/test_review_round5_regressions.py -v
+# → 4 passed in 3.14s
+
+# 3. Toàn bộ 104 test Backend (bao gồm load 100 trạm, 50 concurrent, live transport) trên PostgreSQL 16 sạch
+# (reset sạch redcode_ci & redcode_live và alembic upgrade head trước khi chạy)
+..\venv\Scripts\pytest.exe tests -v
+# → 104 passed in 59.61s
+
+# 4. Build Frontend production & chạy thử trực tiếp với PostgreSQL 16 (redcode_dev)
+Set-Location frontend; npm run build
+# → ✓ 1504 modules transformed, built in 6.56s
+# Backend uvicorn (cổng 8000) + vite preview (cổng 4173, LAN http://10.10.10.186:4173)
+# GET http://localhost:4173/ -> 200 OK
+# GET http://localhost:4173/api/health -> {"status":"ok","liveness":"ok","database":"ok","websocket":"ok","n8n":"disabled","active_stations":0,"total_stations":5}
+# GET http://10.10.10.186:4173/api/health -> 200 OK
+```
+
+### Ghi chú kỹ thuật phát hiện khi chạy trực tiếp
+
+- [`backend/start_server.py`](backend/start_server.py) được thiết kế cho Linux Docker container (`'--forwarded-allow-ips', '*'`). Khi chạy trực tiếp trên Windows bằng Python ngoài container, C runtime tự động mở rộng dấu `*` thành danh sách file trong thư mục hiện tại khiến `uvicorn` báo lỗi `Got unexpected extra arguments`; trên Windows chạy trực tiếp nên gọi `python -m uvicorn app.main:app ...`.
+- Khi chạy lặp `pytest` nhiều lần trên cùng một database PostgreSQL mà không reset giữa các lượt, test `test_reports_summary_sql_aggregation_offline_duration_and_avg_times` sẽ thấy dữ liệu cộng dồn từ lượt chạy trước (`2 == 1`); cần reset `redcode_ci`/`redcode_live` sạch trước mỗi lần chạy toàn bộ suite.
+
+## 2026-11-13 — Xử lý 4 vấn đề rà soát đợt 5 (P1: 01–02, P2: 03–04) — commit `8dba80b`
 
 ### Yêu cầu
 
@@ -61,10 +108,10 @@ npm run build
 
 ### Giới hạn & việc còn lại
 
-- Các truy vấn SQL mới trên PostgreSQL (`func.timezone`, `func.extract('epoch', ...)`) đã bám đúng cú pháp chuẩn PostgreSQL nhưng phiên cục bộ chạy trên SQLite; cần để GitHub Actions CI (job `backend` chạy PostgreSQL 16) xác nhận thêm sau khi push.
-- Giao diện `ReportsView.jsx` đã kiểm chứng qua Vite production build; chưa chạy test E2E trình duyệt (Playwright/Cypress).
+- Các truy vấn SQL mới trên PostgreSQL (`func.timezone`, `func.extract('epoch', ...)`, window `LEAD`) đã được kiểm chứng trực tiếp pass 104/104 trên Docker PostgreSQL 16 trong mục kiểm chứng ngày `2026-11-13` phía trên.
+- Giao diện `ReportsView.jsx` đã kiểm chứng qua Vite production build và chạy trực tiếp qua `vite preview`; chưa chạy test E2E tự động trình duyệt (Playwright/Cypress).
 
-## 2026-11-11 — Xử lý 14 phát hiện rà soát đợt 4 (Backend, Frontend, đồng bộ múi giờ & kiểm thử hồi quy)
+## 2026-11-11 — Xử lý 14 phát hiện rà soát đợt 4 (Backend, Frontend, đồng bộ múi giờ & kiểm thử hồi quy) — commit `338055c`
 
 ### Yêu cầu
 
