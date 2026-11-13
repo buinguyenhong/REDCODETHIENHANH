@@ -1,4 +1,8 @@
-"""Optional n8n configuration; no implicit replay of pre-enable notifications."""
+"""Historical migration keeping forward-only schema continuity.
+
+n8n is now configured exclusively via environment variables (.env); runtime ORM
+removed IntegrationSettings and neither reads nor writes integration_settings.
+"""
 from alembic import op
 import sqlalchemy as sa
 

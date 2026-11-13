@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models import SystemEvent, Station, Alarm, User, NotificationOutbox, OutboxStatus
 from app.api.deps import get_current_active_admin
 from app.core.websocket_manager import manager
+from app.config import settings
 
 router = APIRouter(prefix="/system", tags=["System Management"])
 
@@ -42,6 +43,12 @@ async def get_system_status(
         "total_configured_stations": len(stations),
         "online_stations": online_count,
         "offline_stations": offline_count,
+        "n8n_integration": {
+            "enabled": settings.N8N_ENABLED,
+            "config_source": "env",
+            "timeout_seconds": settings.N8N_TIMEOUT_SECONDS,
+            "max_retries": settings.N8N_MAX_RETRIES,
+        },
         "notification_outbox": {
             "pending": counts.get(OutboxStatus.PENDING.value, 0),
             "processing": counts.get(OutboxStatus.PROCESSING.value, 0),

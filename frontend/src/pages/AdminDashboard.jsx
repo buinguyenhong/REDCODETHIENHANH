@@ -618,10 +618,10 @@ export default function AdminDashboard() {
                 nhìn thấy được, nếu không thì nó chết im lặng trong system_events. */}
             <div className="text-xs text-slate-500 font-mono mt-0.5">
               {outbox?.exhausted
-                ? `${outbox.exhausted} thông báo bỏ hẳn · ${outbox.retryable_failed || 0} chờ thử lại`
+                ? `${outbox.exhausted} thông báo bỏ hẳn · ${outbox.retryable_failed || 0} chờ thử lại (cấu hình .env)`
                 : health?.n8n === 'enabled'
-                  ? 'Báo động nội bộ không đi qua đây'
-                  : 'Không dùng · báo động nội bộ không đi qua đây'}
+                  ? 'Cấu hình qua .env · Báo động nội bộ không đi qua đây'
+                  : 'Tắt trong .env · Báo động nội bộ không đi qua đây'}
             </div>
           </div>
         </div>

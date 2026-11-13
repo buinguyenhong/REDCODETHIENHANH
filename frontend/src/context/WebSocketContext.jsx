@@ -94,7 +94,15 @@ export function WebSocketProvider({ children }) {
     const pending = JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]');
     const remaining = [];
     for (const item of pending) {
-      try { await api.dismissStationAlarm(item); } catch (_) { remaining.push(item); }
+      try {
+        await api.dismissStationAlarm(item);
+      } catch (err) {
+        // 4xx đầu cuối (409 đã hết hạn/hủy, 404, 403...) sẽ không bao giờ thành công khi retry.
+        const isTerminalClientError = err?.status && err.status < 500 && err.status !== 408 && err.status !== 429;
+        if (!isTerminalClientError) {
+          remaining.push(item);
+        }
+      }
     }
     localStorage.setItem('redcode_pending_dismiss', JSON.stringify(remaining));
     let alarms;
@@ -443,6 +451,11 @@ export function WebSocketProvider({ children }) {
         localStorage.setItem('redcode_pending_dismiss', JSON.stringify(latest.filter(item => item.alarm_id !== action.alarm_id)));
       } catch (err) {
         console.warn('Gửi xác nhận tắt báo động lỗi:', err);
+        const isTerminalClientError = err?.status && err.status < 500 && err.status !== 408 && err.status !== 429;
+        if (isTerminalClientError) {
+          const latest = JSON.parse(localStorage.getItem('redcode_pending_dismiss') || '[]');
+          localStorage.setItem('redcode_pending_dismiss', JSON.stringify(latest.filter(item => item.alarm_id !== action.alarm_id)));
+        }
       }
     }
   };

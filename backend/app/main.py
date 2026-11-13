@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from starlette.concurrency import iterate_in_threadpool
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +16,11 @@ from app.database import engine, Base, AsyncSessionLocal
 from app.api import api_router
 from app.core.websocket_manager import manager
 from app.core.security import hash_device_token, decode_access_token
+from app.core.config_audit import (
+    load_entity_snapshot,
+    parse_config_target,
+    sanitize_audit_data,
+)
 from app.models import (
     Station, User, StationStatus, AlarmEvent, UserRole,
     AlarmStationState, StationAlarmStateEnum, Alarm, AlarmStatus, SystemEvent
@@ -130,13 +136,78 @@ def _is_configuration_mutation(method: str, path: str) -> bool:
 
 @app.middleware('http')
 async def configuration_audit(request, call_next):
-    response = await call_next(request)
-    if response.status_code < 400 and _is_configuration_mutation(request.method, request.url.path):
-        authorization = request.headers.get('authorization', '')
-        payload = decode_access_token(authorization[7:]) if authorization.startswith('Bearer ') else None
+    target = parse_config_target(request.method, request.url.path)
+    before_snapshot = None
+    before_secret_fp = None
+    resource = target[0] if target else None
+    entity_id = target[1] if target else None
+
+    if target is not None and entity_id is not None:
         try:
             async with AsyncSessionLocal() as session:
-                session.add(SystemEvent(event_type='CONFIGURATION_CHANGED', severity='INFO', message='Configuration changed', event_metadata={'actor': payload.get('sub') if payload else None, 'method': request.method, 'path': request.url.path}, created_at=datetime.now(timezone.utc)))
+                before_snapshot, before_secret_fp = await load_entity_snapshot(session, resource, entity_id)
+        except Exception:
+            logger.exception('Configuration audit pre-change snapshot failed')
+
+    response = await call_next(request)
+
+    if target is not None and response.status_code < 400:
+        if before_snapshot is None:
+            before_snapshot = getattr(request.state, 'audit_before', None)
+            before_secret_fp = getattr(request.state, 'audit_before_secret_fp', None)
+
+        if entity_id is None and getattr(response, 'body_iterator', None) is not None:
+            try:
+                body_chunks = [chunk async for chunk in response.body_iterator]
+                response.body_iterator = iterate_in_threadpool(iter(body_chunks))
+                raw_body = b''.join(body_chunks)
+                if raw_body:
+                    parsed = json.loads(raw_body.decode('utf-8'))
+                    if isinstance(parsed, dict) and isinstance(parsed.get('id'), int):
+                        entity_id = parsed['id']
+            except Exception:
+                logger.exception('Configuration audit response body inspection failed')
+
+        after_snapshot = None
+        after_secret_fp = None
+        if entity_id is not None:
+            try:
+                async with AsyncSessionLocal() as session:
+                    after_snapshot, after_secret_fp = await load_entity_snapshot(session, resource, entity_id)
+            except Exception:
+                logger.exception('Configuration audit post-change snapshot failed')
+
+        if (
+            after_snapshot is not None
+            and before_secret_fp is not None
+            and after_secret_fp is not None
+            and before_secret_fp != after_secret_fp
+        ):
+            if resource == 'users':
+                after_snapshot['password_changed'] = True
+            elif resource == 'stations':
+                after_snapshot['credential_rotated'] = True
+
+        authorization = request.headers.get('authorization', '')
+        payload = decode_access_token(authorization[7:]) if authorization.startswith('Bearer ') else None
+        metadata = {
+            'actor': payload.get('sub') if payload else None,
+            'method': request.method,
+            'path': request.url.path,
+            'resource': resource,
+            'entity_id': entity_id,
+            'before': sanitize_audit_data(before_snapshot),
+            'after': sanitize_audit_data(after_snapshot),
+        }
+        try:
+            async with AsyncSessionLocal() as session:
+                session.add(SystemEvent(
+                    event_type='CONFIGURATION_CHANGED',
+                    severity='INFO',
+                    message='Configuration changed',
+                    event_metadata=metadata,
+                    created_at=datetime.now(timezone.utc),
+                ))
                 await session.commit()
         except Exception:
             logger.exception('Configuration audit persistence failed')

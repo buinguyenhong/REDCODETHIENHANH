@@ -9,7 +9,7 @@
 
 ## Cách sử dụng và thứ tự ưu tiên
 
-- Mục 45 quy định yêu cầu reliability bổ sung; mục 46 ghi các quyết định mới về role, xác nhận thiết bị và thời hạn alarm. Các mục này thay thế nội dung baseline nếu có xung đột.
+- Mục 45 quy định yêu cầu reliability bổ sung; mục 46–48 ghi các quyết định nghiệp vụ và kiến trúc hiện hành về role, xác nhận thiết bị, thời hạn alarm và cấu hình hạ tầng/n8n qua `.env`. Các mục này thay thế nội dung baseline nếu có xung đột.
 - README chỉ hướng dẫn sử dụng/chạy dự án, không tự thay đổi nghiệp vụ.
 - Agent phải đọc tài liệu này trước khi sửa, cập nhật `agent_changelog.md` sau mỗi đợt, ghi rõ FIXED/PARTIAL/BLOCKED và bằng chứng thực chạy.
 - Không đồng nhất yêu cầu với chức năng đã được nghiệm thu; test mock/build không thay thế kiểm thử mạng/browser/loa thực.
@@ -788,7 +788,8 @@ Các event mới nhất.
 - Receiver groups
 - Stations
 - Audio
-- n8n integration
+
+Ghi chú: Tích hợp **n8n** cấu hình qua biến môi trường (`.env`), không cấu hình qua Admin UI; Admin Dashboard chỉ hiển thị trạng thái `N8N_ENABLED` và giám sát hàng đợi `notification_outbox` (`GET /api/system/status`, `POST /api/system/outbox/requeue-exhausted`).
 
 ---
 
@@ -1657,8 +1658,8 @@ Các yêu cầu sau hợp nhất yêu cầu thực thi sau review R01–R16. Th�
 ## Batch B — Configuration, audit và vận hành
 
 - **R07/R08 — Kiosk/auth:** boot/refresh bằng credential trạm nội bộ, không cần JWT user sau provisioning; station 401 hiển thị lỗi activation. Dọn socket/timer khi token/user/station đổi, xử lý revoke/expiry; phân biệt dashboard monitoring và receiver audio. Offline dismiss lưu pending action, retry idempotent, không replay alarm đã dismiss. Provisioning theo mục 46.
-- **R10/R12/R13/R16 — Permission/config:** backend là nguồn permission duy nhất, API effective permissions; Admin chỉnh quyền khoa/user theo mô hình được chốt, bật/tắt cấu hình, ordered audio sequence/repeat/interval, receiver membership và n8n integration. Omitted membership khác explicit empty; sửa tên group không xóa thành viên; target snapshot không đổi sau tạo. Soft-disable để giữ history, rotate/revoke/disable đóng socket cũ; audit cấu hình. Lifecycle theo mục 46, không bổ sung workflow xử lý sự cố.
-- **R09 — Outbox:** claim/lease/locked_at, reclaim abandoned PROCESSING, due-time filter trước limit, capped exponential backoff và attempt audit. At-least-once với stable event ID/idempotency cho n8n, không chặn core. Có backlog/failure monitoring và Admin retry khi hết retries; config/credential được quản trị và bảo vệ.
+- **R10/R12/R13/R16 — Permission/config:** backend là nguồn permission duy nhất, API effective permissions; Admin chỉnh quyền khoa/user theo mô hình được chốt, bật/tắt cấu hình, ordered audio sequence/repeat/interval và receiver membership trên Admin UI; tích hợp n8n được cấu hình tập trung bằng `.env`. Omitted membership khác explicit empty; sửa tên group không xóa thành viên; target snapshot không đổi sau tạo. Soft-disable để giữ history, rotate/revoke/disable đóng socket cũ; audit cấu hình. Lifecycle theo mục 46, không bổ sung workflow xử lý sự cố.
+- **R09 — Outbox:** claim/lease/locked_at, reclaim abandoned PROCESSING, due-time filter trước limit, capped exponential backoff và attempt audit. At-least-once với stable event ID/idempotency cho n8n, không chặn core. Có backlog/failure monitoring và Admin retry khi hết retries; cấu hình kết nối n8n được bảo vệ trong `.env` (không qua UI).
 - **R11/R14/R15 — State/security/health:** typed event allowlist, target authorization, transition/idempotency guards; ACK muộn không ghi đè DISMISSED/CANCELLED/EXPIRED. DISPLAYED chỉ lúc overlay head hiển thị. Connect/disconnect có station ID; structured errors/rollback, config before/after audit không chứa secret. Production fail-fast với PostgreSQL, DEMO_MODE=false, SECRET_KEY riêng ≥32 ký tự và origin allowlist cụ thể; seed idempotent, chỉ bootstrap Admin, không demo data. Validate enum/length/bounds/FK/color/null/local audio; upload filename server-generated, path containment, size/content validation. Credentials query không xuất hiện trong Nginx/Uvicorn logs. Health/readiness phản ánh DB/tasks/recovery; n8n degraded không làm core failed.
 - **R16 — Reports/deploy:** report chỉ ADMIN; ngày Asia/Ho_Chi_Minh quy đổi UTC, invalid/reversed range trả 4xx, UI timezone explicit. SQL aggregation/pagination theo ngày/tháng/type/khoa; per-station offline count/duration và average presentation/ACK khi có dữ liệu, không giả số thiếu. XLSX detail đầy đủ timestamps/error và chống spreadsheet formula. Image build frontend từ checkout sạch, external PostgreSQL network rõ ràng, healthchecks/restart/audio persistence. Backup/restore DB và audio phải kiểm chứng round trip; document single-worker constraint. Migration forward-only; rollback bằng backup đã kiểm chứng/image tương ứng, không tự drop bảng hoặc downgrade.
 
@@ -1708,8 +1709,11 @@ Test API SQLite, unit audio và build không đóng acceptance mạng/loa. Các 
 - Report khoảng [start, next hospital midnight) với timezone Asia/Ho_Chi_Minh, datetime có offset quy đổi UTC, naive datetime là giờ bệnh viện.
 - Production forward-only Alembic upgrade head; rollback bằng backup đã kiểm chứng, không downgrade giả.
 
-# 48. Bootstrap database và optional n8n
+# 48. Cấu hình hạ tầng qua `.env` và tích hợp n8n tùy chọn
 
-- Docker cài phần mềm trước PostgreSQL connection: database-independent setup, token có tại server, PostgreSQL-only probe/migrate/seed; chỉ mở main app sau hoàn tất, runtime secrets persistent bảo vệ, khóa bootstrap sau thiết lập. Chưa DB không vận hành alarm; không dùng SQLite production staging data rồi chuyển ngầm.
-- n8n optional, Admin cấu hình/test/bật qua UI, source DB; disabled không enqueue alarm mới, enabled outage durable retry. First-enable cutoff không replay history cũ. Tạm disable giữ existing eligible jobs để retry khi bật lại; legacy outbox trước cutoff không gửi tự động.
-- Upgrade migration integration mặc định disabled, Admin cần bật lại. Wizard không tự provision PostgreSQL/network/TLS hoặc thay DB đang vận hành.
+- PostgreSQL và n8n là cấu hình hạ tầng cấp triển khai, khai báo tập trung qua biến môi trường (`.env`) và được kiểm tra fail-fast lúc khởi động tại `app/config.py`:
+  - `DATABASE_URL` (`postgresql+asyncpg://...` ở production) do IT dựng sẵn; launcher chạy `alembic upgrade head` rồi khởi động Uvicorn. Không có wizard thiết lập database trong ứng dụng.
+  - `N8N_ENABLED`, `N8N_WEBHOOK_URL`, `N8N_TIMEOUT_SECONDS` (1–60), `N8N_MAX_RETRIES` (1–20) điều khiển tích hợp n8n tùy chọn. Không có giao diện Admin chỉnh sửa cấu hình n8n; không sử dụng bảng/model `IntegrationSettings` trong runtime (bảng `integration_settings` nếu có từ migration lịch sử chỉ được giữ lại cho tính forward-only, không đọc/ghi).
+- Khi `N8N_ENABLED=false`, hệ thống báo động nội bộ chạy bình thường và không ghi bản ghi mới vào `notification_outbox`.
+- Khi `N8N_ENABLED=true` (bắt buộc `N8N_WEBHOOK_URL` hợp lệ `http(s)://...`), mỗi báo động mới tạo một bản ghi outbox bất đồng bộ có cơ chế lease recovery, capped exponential backoff và trạng thái `EXHAUSTED` khi hết lượt thử.
+- Admin theo dõi trạng thái cấu hình và tồn đọng outbox qua `GET /api/system/status`, kiểm tra kết nối n8n qua `GET /api/health/n8n`, và phát lại có kiểm soát các bản ghi đã cạn lượt qua `POST /api/system/outbox/requeue-exhausted`.

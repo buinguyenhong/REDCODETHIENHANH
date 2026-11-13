@@ -16,7 +16,7 @@ Hai điểm hạ tầng đi kèm: `/api/health` trả `websocket: "degraded"` **
 
 Hai endpoint chẩn đoán `/api/health/db` và `/api/health/websocket` nay **yêu cầu đăng nhập ADMIN**. `/api/health` công khai vẫn trả các trường tổng hợp nhưng không có mã trạm và không có thông báo lỗi thô. Nếu có probe hạ tầng đang đọc hai endpoint con, phải cấp token ADMIN cho probe đó hoặc bỏ probe đi.
 
-Bảng `integration_settings` vẫn nằm trong schema (migration forward-only, không drop) nhưng **không còn được đọc/ghi**; cấu hình n8n nay chỉ đến từ `.env`.
+Bảng `integration_settings` vẫn nằm trong schema PostgreSQL (migration forward-only lịch sử, không drop) nhưng model `IntegrationSettings` đã được gỡ khỏi runtime ORM (`app/models/__init__.py`) và hệ thống **không đọc/ghi bảng này**; cấu hình n8n chỉ đến từ `.env`.
 
 ## 1. Mô hình triển khai
 

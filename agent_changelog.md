@@ -6,6 +6,64 @@ Lịch sử thay đổi và kiểm chứng. Đặc tả hiện hành duy nhất:
 
 Sau mỗi đợt thay đổi, bổ sung ngày, yêu cầu, phạm vi/file chính, migration, commands và kết quả thực chạy, giới hạn và việc còn lại. Không ghi PASS nếu chưa chạy; giữ lịch sử cũ. Commit hash của entry mới có thể bổ sung ở đợt sau, không amend commit chỉ để thêm hash.
 
+## 2026-11-13 — Xử lý 4 vấn đề rà soát đợt 5 (P1: 01–02, P2: 03–04)
+
+### Yêu cầu
+
+1. **[P1-01]** Kiểm tra vòng đời toàn cục của `Alarm` (`ACTIVE` và chưa quá `expires_at`) trong `dismiss_station_alarm()` trước khi cho phép local dismiss, giữ nguyên tính độc lập giữa các trạm.
+2. **[P1-02]** Thống nhất cấu hình **n8n** chỉ qua biến môi trường (`.env`), không dùng giao diện quản trị; loại bỏ model legacy `IntegrationSettings` khỏi runtime ORM và đồng bộ hóa lại `project.md`, tài liệu triển khai và giao diện Admin.
+3. **[P2-03]** Hoàn thiện báo cáo tổng hợp (`GET /api/reports/summary`) theo Mục 23 và R16: dùng SQL aggregation (`GROUP BY`) thay cho nạp toàn bộ bảng vào RAM, bổ sung thời gian nhận/hiển thị (presentation)/ACK trung bình và thống kê tổng thời gian offline theo trạm (SQL window `LEAD`) khi dữ liệu đủ.
+4. **[P2-04]** Bổ sung audit `before` / `after` có chọn lọc cho middleware `configuration_audit` (`CONFIGURATION_CHANGED`) theo R11, tuyệt đối không lưu mật khẩu, device token hay hash/secret.
+
+### Các hạng mục đã xử lý
+
+1. **P1-01 — Ràng buộc vòng đời toàn cục khi Dismiss tại trạm**:
+   - [`backend/app/api/stations.py`](backend/app/api/stations.py): trong `dismiss_station_alarm()`, kiểm tra `alarm.expires_at <= now` (gọi `expire_alarms(db)` khi vừa quá hạn) và từ chối HTTP `409` nếu báo động không còn `ACTIVE` hoặc đã hết hạn; giữ nguyên tính độc lập của từng trạm khi báo động còn hiệu lực.
+   - [`frontend/src/context/WebSocketContext.jsx`](frontend/src/context/WebSocketContext.jsx): dọn bỏ các pending dismiss từ `localStorage` nếu API trả lỗi 4xx đầu cuối (ví dụ `409` do báo động đã bị hủy/hết hạn), tránh lặp retry mỗi lần đồng bộ lại.
+2. **P1-02 — Thống nhất cấu hình n8n qua `.env` & đồng bộ tài liệu**:
+   - [`backend/app/models/__init__.py`](backend/app/models/__init__.py) và [`backend/alembic/versions/20261007_integration_settings.py`](backend/alembic/versions/20261007_integration_settings.py): gỡ bỏ class ORM legacy `IntegrationSettings` khỏi runtime; giữ nguyên file migration lịch sử forward-only kèm chú thích không dùng trong runtime.
+   - [`backend/app/config.py`](backend/app/config.py): siết validation khi `N8N_ENABLED=true` phải có `N8N_WEBHOOK_URL` hợp lệ (`http://` hoặc `https://`), `N8N_TIMEOUT_SECONDS` trong `[1, 60]` và `N8N_MAX_RETRIES` trong `[1, 20]`.
+   - [`backend/app/api/system.py`](backend/app/api/system.py) & [`frontend/src/pages/AdminDashboard.jsx`](frontend/src/pages/AdminDashboard.jsx): bổ sung thông tin chỉ đọc `n8n_integration` (`config_source: "env"`) vào `GET /api/system/status` và làm rõ thẻ `N8N INTEGRATION` trên Admin Dashboard cấu hình qua `.env`.
+   - [`project.md`](project.md) & [`docs/production_deployment.md`](docs/production_deployment.md): cập nhật Mục 22, Mục 45 (R09, R10/R12/R13/R16), Mục 48 và ghi chú runbook để thống nhất toàn bộ tài liệu theo kiến trúc `.env` cho PostgreSQL + n8n.
+3. **P2-03 — Báo cáo tổng hợp dùng SQL aggregation, thời gian offline & trung bình presentation/ACK**:
+   - [`backend/app/api/reports.py`](backend/app/api/reports.py): chuyển toàn bộ tổng hợp (`total_alarms`, `by_status`, `by_type`, `by_department`, `by_day`, `by_month` theo múi giờ `Asia/Ho_Chi_Minh`) sang truy vấn SQL `GROUP BY` (hỗ trợ cả SQLite và PostgreSQL); bổ sung `avg_received_seconds`, `avg_presentation_seconds`, `avg_ack_seconds`, `total_offline_duration_seconds` và `by_station_offline` dùng `CASE` / `AVG` / window function `LEAD` (trả `None` khi thiếu dữ liệu, không giả số `0`).
+   - [`frontend/src/pages/ReportsView.jsx`](frontend/src/pages/ReportsView.jsx): hiển thị các chỉ số tổng thời gian offline, thời gian hiển thị trung bình và thời gian ACK trung bình trên giao diện Báo cáo.
+4. **P2-04 — Audit cấu hình `before` / `after` không chứa secret**:
+   - [`backend/app/core/config_audit.py`](backend/app/core/config_audit.py) (**mới**): triển khai `parse_config_target`, `load_entity_snapshot`, `sanitize_audit_data` lọc bỏ mọi khóa nhạy cảm (`password`, `password_hash`, `device_token`, `raw_device_token`, `device_token_hash`, `secret`, `access_token`, các hậu tố `_password`/`_token`/`_secret`/`_hash`).
+   - [`backend/app/main.py`](backend/app/main.py) & [`backend/app/api/stations.py`](backend/app/api/stations.py): cập nhật middleware `configuration_audit` ghi nhận `resource`, `entity_id`, `before`, `after` (và chỉ ghi cờ boolean `password_changed` / `credential_rotated` khi có đổi bí mật), hỗ trợ cả cập nhật tồn tại qua `POST /api/stations/register`.
+
+### Migration
+
+- Không thêm revision Alembic mới (head hiện hành: `20261007_integrations`); không đụng độ schema vì bảng `integration_settings` không có cột `NOT NULL` nào bị thiếu và `test_alembic_migrations.py` kiểm tra `table.columns <= actual`.
+
+### Bằng chứng thực chạy
+
+```powershell
+# 1. Test hồi quy đợt 5 + kiểm tra migration Alembic
+Set-Location backend
+Remove-Item -Force -ErrorAction SilentlyContinue redcode.db
+..\venv\Scripts\pytest.exe tests/test_review_round5_regressions.py tests/test_alembic_migrations.py -v
+# → 6 passed in 4.99s (0 warnings)
+
+# 2. Toàn bộ suite Backend trên cơ sở dữ liệu sạch
+Set-Location backend
+Remove-Item -Force -ErrorAction SilentlyContinue redcode.db
+..\venv\Scripts\pytest.exe -q
+# → 104 passed in 77.23s (0:01:17)
+
+# 3. Frontend unit test & production build
+Set-Location frontend
+npm test
+# → tests 47 / pass 47 / fail 0
+npm run build
+# → ✓ 1504 modules transformed, built in 8.12s
+```
+
+### Giới hạn & việc còn lại
+
+- Các truy vấn SQL mới trên PostgreSQL (`func.timezone`, `func.extract('epoch', ...)`) đã bám đúng cú pháp chuẩn PostgreSQL nhưng phiên cục bộ chạy trên SQLite; cần để GitHub Actions CI (job `backend` chạy PostgreSQL 16) xác nhận thêm sau khi push.
+- Giao diện `ReportsView.jsx` đã kiểm chứng qua Vite production build; chưa chạy test E2E trình duyệt (Playwright/Cypress).
+
 ## 2026-11-11 — Xử lý 14 phát hiện rà soát đợt 4 (Backend, Frontend, đồng bộ múi giờ & kiểm thử hồi quy)
 
 ### Yêu cầu

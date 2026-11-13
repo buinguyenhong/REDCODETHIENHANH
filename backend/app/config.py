@@ -42,8 +42,14 @@ class Settings(BaseSettings):
                 raise ValueError('Production requires a unique SECRET_KEY of at least 32 characters')
             if '*' in self.ALLOWED_ORIGINS:
                 raise ValueError('Production requires an explicit origin allowlist')
-        if self.N8N_ENABLED and not self.N8N_WEBHOOK_URL.strip():
-            raise ValueError('N8N_ENABLED=true requires N8N_WEBHOOK_URL')
+        if self.N8N_ENABLED:
+            webhook_url = self.N8N_WEBHOOK_URL.strip()
+            if not webhook_url or not webhook_url.startswith(('http://', 'https://')):
+                raise ValueError('N8N_ENABLED=true requires a valid http(s):// N8N_WEBHOOK_URL')
+        if not (1 <= self.N8N_TIMEOUT_SECONDS <= 60):
+            raise ValueError('N8N_TIMEOUT_SECONDS must be between 1 and 60')
+        if not (1 <= self.N8N_MAX_RETRIES <= 20):
+            raise ValueError('N8N_MAX_RETRIES must be between 1 and 20')
         return self
 
     @field_validator("ALLOWED_ORIGINS")

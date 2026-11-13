@@ -17,6 +17,7 @@ from app.core.security import hash_device_token, extract_client_ip
 from app.core.websocket_manager import manager
 from app.api.deps import get_current_user, get_current_active_admin
 from app.core.alarm_lifecycle import expire_alarms
+from app.core.config_audit import load_entity_snapshot
 
 router = APIRouter(prefix="/stations", tags=["Stations"])
 
@@ -155,6 +156,9 @@ async def register_station(
 
     credential_rotated = False
     if station:
+        before_snapshot, before_secret_fp = await load_entity_snapshot(db, "stations", station.id)
+        request.state.audit_before = before_snapshot
+        request.state.audit_before_secret_fp = before_secret_fp
         # Update existing station
         credential_rotated = station.device_token_hash != token_hash
         station.name = reg.name
@@ -386,7 +390,23 @@ async def dismiss_station_alarm(
     if target is None:
         raise HTTPException(status_code=403, detail='Trạm không thuộc nhóm nhận của báo động này')
 
+    # 3b. Check global alarm lifecycle (must still be ACTIVE and not expired)
     now = datetime.now(timezone.utc)
+    expiry = alarm.expires_at
+    expiry_utc = (
+        (expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry)
+        if expiry is not None
+        else None
+    )
+    if alarm.status == AlarmStatus.ACTIVE.value and expiry_utc is not None and expiry_utc <= now:
+        await expire_alarms(db)
+        await db.refresh(alarm)
+
+    if alarm.status != AlarmStatus.ACTIVE.value or (expiry_utc is not None and expiry_utc <= now):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Báo động đã kết thúc ({alarm.status}), không thể tắt cảnh báo tại trạm",
+        )
 
     # 4. Update AlarmStationState to DISMISSED
     st_state_stmt = select(AlarmStationState).where(

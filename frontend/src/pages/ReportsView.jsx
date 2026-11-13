@@ -114,19 +114,13 @@ export default function ReportsView() {
         </div>
 
         {/* Summary Metric Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm">
             <span className="text-xs font-mono text-slate-500 uppercase block mb-1">TỔNG SỐ LƯỢT BÁO ĐỘNG</span>
             <div className="text-3xl font-black text-slate-900">{summary?.total_alarms || 0}</div>
-            <span className="text-xs text-slate-400 font-mono mt-1 block">Trong kỳ lọc đã chọn</span>
-          </div>
-
-          <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm">
-            <span className="text-xs font-mono text-slate-500 uppercase block mb-1">CẢNH BÁO ĐANG HOẠT ĐỘNG</span>
-            <div className="text-3xl font-black text-red-600">
-              {summary?.by_status?.ACTIVE || 0}
-            </div>
-            <span className="text-xs text-red-600/80 font-mono mt-1 block">Đang trong thời hạn hiệu lực</span>
+            <span className="text-xs text-slate-400 font-mono mt-1 block">
+              Đang hiệu lực: {summary?.by_status?.ACTIVE || 0} lượt
+            </span>
           </div>
 
           <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm">
@@ -134,7 +128,35 @@ export default function ReportsView() {
             <div className="text-3xl font-black text-amber-600">
               {summary?.device_offline_events_count || 0}
             </div>
-            <span className="text-xs text-slate-400 font-mono mt-1 block">Số lần ngắt kết nối mạng</span>
+            <span className="text-xs text-slate-500 font-mono mt-1 block">
+              {summary?.total_offline_duration_seconds != null
+                ? `Tổng thời gian: ${summary.total_offline_duration_seconds}s`
+                : 'Chưa đủ dữ liệu cặp ngắt/nối'}
+            </span>
+          </div>
+
+          <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm">
+            <span className="text-xs font-mono text-slate-500 uppercase block mb-1">HIỂN THỊ TRUNG BÌNH</span>
+            <div className="text-3xl font-black text-blue-600">
+              {summary?.avg_presentation_seconds != null ? `${summary.avg_presentation_seconds}s` : '—'}
+            </div>
+            <span className="text-xs text-slate-400 font-mono mt-1 block">
+              {summary?.avg_presentation_seconds != null
+                ? 'Từ lúc phát tới khi hiện overlay'
+                : 'Chưa đủ dữ liệu'}
+            </span>
+          </div>
+
+          <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm">
+            <span className="text-xs font-mono text-slate-500 uppercase block mb-1">XÁC NHẬN (ACK) TRUNG BÌNH</span>
+            <div className="text-3xl font-black text-emerald-600">
+              {summary?.avg_ack_seconds != null ? `${summary.avg_ack_seconds}s` : '—'}
+            </div>
+            <span className="text-xs text-slate-400 font-mono mt-1 block">
+              {summary?.avg_ack_seconds != null
+                ? 'Từ lúc phát tới khi trạm tắt tại chỗ'
+                : 'Chưa đủ dữ liệu'}
+            </span>
           </div>
         </div>
 

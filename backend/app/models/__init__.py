@@ -45,21 +45,6 @@ class OutboxStatus(str, enum.Enum):
     # thái và dễ bị đọc sai. Tách thành giá trị riêng để vòng đời là tường minh.
     EXHAUSTED = "EXHAUSTED"
 
-class IntegrationSettings(Base):
-    """Bảng cấu hình n8n cũ, giữ lại để không phá schema đã migrate.
-
-    n8n nay cấu hình bằng biến môi trường (``N8N_ENABLED``, ``N8N_WEBHOOK_URL``,
-    ``N8N_TIMEOUT_SECONDS``, ``N8N_MAX_RETRIES``). Không đọc/ghi bảng này nữa.
-    Migration là forward-only nên bảng không bị drop.
-    """
-    __tablename__ = 'integration_settings'
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    webhook_url: Mapped[str] = mapped_column(Text, default='', nullable=False)
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
-    max_retries: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
-    enabled_since: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
 class Department(Base):
     __tablename__ = "departments"
 

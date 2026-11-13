@@ -1,9 +1,9 @@
 import io
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from openpyxl import Workbook
@@ -52,6 +52,20 @@ def parse_date_range(from_date_str: Optional[str], to_date_str: Optional[str]) -
         raise HTTPException(status_code=422, detail='Khoảng ngày không hợp lệ')
     return start_dt, end_dt
 
+def _get_dialect_name(db: AsyncSession) -> str:
+    bind = getattr(db, "bind", None)
+    if bind is None:
+        sync_session = getattr(db, "sync_session", None)
+        bind = sync_session.get_bind() if sync_session is not None else None
+    return bind.dialect.name if bind is not None else "sqlite"
+
+
+def _sql_seconds_diff(dialect_name: str, start_col, end_col):
+    if dialect_name == "postgresql":
+        return func.extract("epoch", end_col - start_col)
+    return (func.julianday(end_col) - func.julianday(start_col)) * 86400.0
+
+
 @router.get("/summary")
 async def get_summary_report(
     from_date: Optional[str] = None,
@@ -60,51 +74,177 @@ async def get_summary_report(
     user: User = Depends(get_current_active_admin)
 ):
     start_dt, end_dt = parse_date_range(from_date, to_date)
+    dialect_name = _get_dialect_name(db)
 
-    # Chỉ lấy các cột cần đếm. Đây là truy vấn duy nhất trong hệ thống quét toàn
-    # bảng báo động không giới hạn, mà kết quả trả về chỉ là vài chục con số đếm.
-    # ``select(Alarm)`` kèm ``selectinload`` kéo về mọi cột của mọi báo động, rồi
-    # thêm hai truy vấn nữa để dựng đối tượng ORM cho hai bảng chỉ nhằm đọc một cái
-    # tên — chi phí đó lớn dần theo số ca báo động tích lũy của bệnh viện.
-    #
-    # Hai phép join đều là nhiều-một nên không nhân dòng, số đếm giữ nguyên.
-    stmt = (
-        select(Alarm.created_at, Alarm.status, AlarmType.name, Department.name)
-        .outerjoin(AlarmType, Alarm.alarm_type_id == AlarmType.id)
-        .outerjoin(Department, Alarm.source_department_id == Department.id)
-    )
+    alarm_filters: List[Any] = []
     if start_dt:
-        stmt = stmt.where(Alarm.created_at >= start_dt)
+        alarm_filters.append(Alarm.created_at >= start_dt)
     if end_dt:
-        stmt = stmt.where(Alarm.created_at < end_dt)
+        alarm_filters.append(Alarm.created_at < end_dt)
 
-    rows = (await db.execute(stmt)).all()
+    # SQL aggregation: tổng theo trạng thái, loại báo động, khoa/phòng, ngày và tháng
+    # theo múi giờ bệnh viện (Asia/Ho_Chi_Minh, UTC+7), không tải toàn bộ lịch sử vào RAM.
+    status_rows = (await db.execute(
+        select(Alarm.status, func.count(Alarm.id))
+        .where(*alarm_filters)
+        .group_by(Alarm.status)
+    )).all()
+    by_status: Dict[str, int] = {status: int(count) for status, count in status_rows}
+    total_alarms = sum(by_status.values())
 
-    total_alarms = len(rows)
-    by_type: Dict[str, int] = {}
-    by_dept: Dict[str, int] = {}
-    by_status: Dict[str, int] = {}
-    by_day, by_month = {}, {}
+    type_label = func.coalesce(AlarmType.name, "Không xác định")
+    type_rows = (await db.execute(
+        select(type_label, func.count(Alarm.id))
+        .select_from(Alarm)
+        .outerjoin(AlarmType, Alarm.alarm_type_id == AlarmType.id)
+        .where(*alarm_filters)
+        .group_by(type_label)
+    )).all()
+    by_type: Dict[str, int] = {name: int(count) for name, count in type_rows}
 
-    for created_at, status, type_name, dept_name in rows:
-        local = created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')) if created_at.tzinfo is None else created_at.astimezone(ZoneInfo('Asia/Ho_Chi_Minh'))
-        day, month = local.strftime('%Y-%m-%d'), local.strftime('%Y-%m')
-        by_day[day] = by_day.get(day, 0) + 1
-        by_month[month] = by_month.get(month, 0) + 1
-        t_name = type_name or "Không xác định"
-        d_name = dept_name or "Không xác định"
-        by_type[t_name] = by_type.get(t_name, 0) + 1
-        by_dept[d_name] = by_dept.get(d_name, 0) + 1
-        by_status[status] = by_status.get(status, 0) + 1
+    dept_label = func.coalesce(Department.name, "Không xác định")
+    dept_rows = (await db.execute(
+        select(dept_label, func.count(Alarm.id))
+        .select_from(Alarm)
+        .outerjoin(Department, Alarm.source_department_id == Department.id)
+        .where(*alarm_filters)
+        .group_by(dept_label)
+    )).all()
+    by_dept: Dict[str, int] = {name: int(count) for name, count in dept_rows}
 
-    # Filter offline events with the exact same date range (Section 28)
+    if dialect_name == "postgresql":
+        day_expr = func.to_char(func.timezone("Asia/Ho_Chi_Minh", Alarm.created_at), "YYYY-MM-DD")
+        month_expr = func.to_char(func.timezone("Asia/Ho_Chi_Minh", Alarm.created_at), "YYYY-MM")
+    else:
+        day_expr = func.strftime("%Y-%m-%d", Alarm.created_at, "+7 hours")
+        month_expr = func.strftime("%Y-%m", Alarm.created_at, "+7 hours")
+
+    day_rows = (await db.execute(
+        select(day_expr, func.count(Alarm.id))
+        .where(*alarm_filters)
+        .group_by(day_expr)
+    )).all()
+    by_day: Dict[str, int] = {day: int(count) for day, count in day_rows if day}
+
+    month_rows = (await db.execute(
+        select(month_expr, func.count(Alarm.id))
+        .where(*alarm_filters)
+        .group_by(month_expr)
+    )).all()
+    by_month: Dict[str, int] = {month: int(count) for month, count in month_rows if month}
+
+    # Thời gian nhận / hiển thị (presentation) / ACK (dismiss) trung bình bằng SQL; trả None nếu thiếu dữ liệu.
+    received_diff = case(
+        (and_(AlarmStationState.received_at.is_not(None), AlarmStationState.received_at >= Alarm.created_at),
+         _sql_seconds_diff(dialect_name, Alarm.created_at, AlarmStationState.received_at)),
+        else_=None,
+    )
+    presentation_diff = case(
+        (and_(AlarmStationState.displayed_at.is_not(None), AlarmStationState.displayed_at >= Alarm.created_at),
+         _sql_seconds_diff(dialect_name, Alarm.created_at, AlarmStationState.displayed_at)),
+        else_=None,
+    )
+    ack_diff = case(
+        (and_(AlarmStationState.dismissed_at.is_not(None), AlarmStationState.dismissed_at >= Alarm.created_at),
+         _sql_seconds_diff(dialect_name, Alarm.created_at, AlarmStationState.dismissed_at)),
+        else_=None,
+    )
+    timing_row = (await db.execute(
+        select(
+            func.count(received_diff),
+            func.avg(received_diff),
+            func.count(presentation_diff),
+            func.avg(presentation_diff),
+            func.count(ack_diff),
+            func.avg(ack_diff),
+        )
+        .select_from(AlarmStationState)
+        .join(Alarm, Alarm.id == AlarmStationState.alarm_id)
+        .where(*alarm_filters)
+    )).one()
+    recv_count, recv_avg, pres_count, pres_avg, ack_count, ack_avg = timing_row
+    avg_received_seconds = round(float(recv_avg), 2) if (recv_count or 0) > 0 and recv_avg is not None else None
+    avg_presentation_seconds = round(float(pres_avg), 2) if (pres_count or 0) > 0 and pres_avg is not None else None
+    avg_ack_seconds = round(float(ack_avg), 2) if (ack_count or 0) > 0 and ack_avg is not None else None
+
+    # Thống kê số lần offline & tổng thời gian offline theo trạm (ghép cặp DEVICE_DISCONNECTED -> DEVICE_CONNECTED).
     offline_stmt = select(func.count(SystemEvent.id)).where(SystemEvent.event_type == "DEVICE_DISCONNECTED")
     if start_dt:
         offline_stmt = offline_stmt.where(SystemEvent.created_at >= start_dt)
     if end_dt:
         offline_stmt = offline_stmt.where(SystemEvent.created_at < end_dt)
+    offline_count = int((await db.execute(offline_stmt)).scalar() or 0)
 
-    offline_count = (await db.execute(offline_stmt)).scalar() or 0
+    ev_filters: List[Any] = [
+        SystemEvent.station_id.is_not(None),
+        SystemEvent.event_type.in_(["DEVICE_DISCONNECTED", "DEVICE_CONNECTED"]),
+    ]
+    if start_dt:
+        ev_filters.append(SystemEvent.created_at >= start_dt)
+    if end_dt:
+        ev_filters.append(SystemEvent.created_at < end_dt)
+
+    ev_sub = (
+        select(
+            SystemEvent.station_id.label("station_id"),
+            SystemEvent.event_type.label("event_type"),
+            SystemEvent.created_at.label("created_at"),
+            func.lead(SystemEvent.event_type).over(
+                partition_by=SystemEvent.station_id,
+                order_by=(SystemEvent.created_at.asc(), SystemEvent.id.asc()),
+            ).label("next_event_type"),
+            func.lead(SystemEvent.created_at).over(
+                partition_by=SystemEvent.station_id,
+                order_by=(SystemEvent.created_at.asc(), SystemEvent.id.asc()),
+            ).label("next_created_at"),
+        )
+        .where(*ev_filters)
+        .subquery()
+    )
+    paired_offline_dur = case(
+        (
+            and_(
+                ev_sub.c.next_event_type == "DEVICE_CONNECTED",
+                ev_sub.c.next_created_at.is_not(None),
+                ev_sub.c.next_created_at >= ev_sub.c.created_at,
+            ),
+            _sql_seconds_diff(dialect_name, ev_sub.c.created_at, ev_sub.c.next_created_at),
+        ),
+        else_=None,
+    )
+    station_offline_rows = (await db.execute(
+        select(
+            ev_sub.c.station_id,
+            Station.station_code,
+            Station.name,
+            func.count().label("offline_count"),
+            func.count(paired_offline_dur).label("resolved_intervals_count"),
+            func.sum(paired_offline_dur).label("offline_seconds"),
+        )
+        .select_from(ev_sub)
+        .join(Station, Station.id == ev_sub.c.station_id)
+        .where(ev_sub.c.event_type == "DEVICE_DISCONNECTED")
+        .group_by(ev_sub.c.station_id, Station.station_code, Station.name)
+        .order_by(Station.station_code.asc())
+    )).all()
+
+    by_station_offline = []
+    total_paired_intervals = 0
+    total_offline_seconds = 0.0
+    for st_id, st_code, st_name, st_off_cnt, st_paired_cnt, st_off_sec in station_offline_rows:
+        paired_cnt = int(st_paired_cnt or 0)
+        total_paired_intervals += paired_cnt
+        dur_val = round(float(st_off_sec), 2) if paired_cnt > 0 and st_off_sec is not None else None
+        if dur_val is not None:
+            total_offline_seconds += float(st_off_sec)
+        by_station_offline.append({
+            "station_id": st_id,
+            "station_code": st_code,
+            "station_name": st_name,
+            "offline_count": int(st_off_cnt or 0),
+            "resolved_intervals_count": paired_cnt,
+            "offline_duration_seconds": dur_val,
+        })
 
     return {
         "total_alarms": total_alarms,
@@ -113,7 +253,12 @@ async def get_summary_report(
         "by_type": by_type,
         "by_department": by_dept,
         "by_status": by_status,
-        "device_offline_events_count": offline_count
+        "device_offline_events_count": offline_count,
+        "total_offline_duration_seconds": round(total_offline_seconds, 2) if total_paired_intervals > 0 else None,
+        "by_station_offline": by_station_offline,
+        "avg_received_seconds": avg_received_seconds,
+        "avg_presentation_seconds": avg_presentation_seconds,
+        "avg_ack_seconds": avg_ack_seconds,
     }
 
 @router.get("/export-xlsx")
